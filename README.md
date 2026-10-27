@@ -43,6 +43,12 @@ cgnumbers/
     group (Ctrl+1..0) the group number is drawn on that squad's banner, handy in 2v2/3v3. Draws through
     the game's Direct3D9 (DXVK-safe). Stage 1 proves the render path; reading squads/groups is stage 2.
 
+matchtimer/
+    Match clock (experimental). MM:SS of real time since the match started, drawn through the game's
+    Direct3D9 like CGNumbers. Starts with the first simulation tick after the loading screen and keeps running
+    through lags; shown in every game, OnlineOnly=1 keeps it to live multiplayer. Position, size and colours
+    in MatchTimer.ini, picked up while the game runs.
+
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
 
