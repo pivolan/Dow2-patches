@@ -247,10 +247,10 @@ static int gf_font3(const BYTE *t, size_t len, const char *want) {
     lstrcpynA(g_gf.name, want, sizeof g_gf.name);
     return found;
 }
-// read the font named `want` from the game's master_fonts; 1 = ok
-static int gf_load(const char *want) {
+// read the font named `want` from the game's master_fonts (gameDir NULL = the folder of the running exe); 1 = ok
+static int gf_load(const char *want, const wchar_t *gameDir) {
     wchar_t dir[MAX_PATH], path[MAX_PATH];
-    GetModuleFileNameW(NULL, dir, MAX_PATH);
+    if (gameDir) _snwprintf(dir, MAX_PATH, L"%ls\\x", gameDir); else GetModuleFileNameW(NULL, dir, MAX_PATH);
     wchar_t *sl = wcsrchr(dir, L'\\'); if (sl) sl[1] = 0; else dir[0] = 0;
     BYTE *swf = NULL; DWORD size = 0;
     for (int i = 0; i < 10 && !swf; i++) {
@@ -357,4 +357,29 @@ static void gf_draw(ID3DXSprite *sp, const char *t, const RECT *r, DWORD fmt, DW
         sp->lpVtbl->Draw(sp, g_gfTex, &g_gfSrc[i], NULL, pos, color);
         x += g_gfAdv[i];
     }
+}
+
+// rundll32 MatchTimer.dll,GameFontTest <game folder>: reads the font as in the game and writes gamefont_test.pgm
+// (the digits at 48 px) next to the DLL, to check the font outside the game
+__declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cmd, int show) {
+    wchar_t dir[MAX_PATH], out[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, cmd, -1, dir, MAX_PATH);
+    if (!gf_load(GAME_FONT, dir)) return;
+    float s = 48 / (g_gf.ascent + g_gf.descent);
+    int cell = 48 + 2 * GF_M, tw = 0, x = 0;
+    for (int c = 0; c < GF_N; c++) tw += (int)(g_gf.adv[c] * s + 0.5f) + 2 * GF_M;
+    BYTE *rgba = calloc(tw * cell, 4), *grey = malloc(tw * cell);
+    if (!rgba || !grey) return;
+    for (int c = 0; c < GF_N; c++) {
+        int w = (int)(g_gf.adv[c] * s + 0.5f) + 2 * GF_M;
+        gf_raster(g_gf.seg[c], g_gf.nseg[c], s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, rgba + x * 4, tw * 4);
+        x += w;
+    }
+    for (int i = 0; i < tw * cell; i++) grey[i] = rgba[i * 4 + 3];
+    wcscpy(out, g_ini); wchar_t *sl = wcsrchr(out, L'\'); if (sl) sl[1] = 0; else out[0] = 0;
+    wcscat(out, L"gamefont_test.pgm");
+    FILE *f = _wfopen(out, L"wb");
+    if (f) { fprintf(f, "P5 %d %d 255\n", tw, cell); fwrite(grey, 1, tw * cell, f); fclose(f); }
+    logmsg("GameFontTest: %d x %d written", tw, cell);
+    free(rgba); free(grey);
 }

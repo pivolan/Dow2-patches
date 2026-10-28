@@ -488,7 +488,7 @@ static int install_d3d_hooks(void) {
 }
 
 static DWORD WINAPI worker(LPVOID _) {
-    gf_load(GAME_FONT);                                              // from the game's files; on failure Book Antiqua
+    gf_load(GAME_FONT, NULL);                                            // from the game's files; on failure Book Antiqua
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
     for (int i = 0; vers[i]; i++) {
         HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
