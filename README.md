@@ -50,6 +50,13 @@ matchtimer/
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 
+mmfind/
+    Automatch (launcher add-on "Automatch (test)"): Multiplayer -> Find a Game -> Start Searching queues the player on
+    the ladder service (rts.fintebtc.de/ladder/api/mm); when a match is found the host creates the room, the others
+    join, the lobby options (VP, 500 points, fixed positions, standard resources), swaps and observers are set by the
+    DLL, and the match starts by itself. Settings in MMFind.ini (server, maps, rating spread, chosen race/hero).
+    Published by hand for now (launcher id "automatch", store version mmfind-<ver>), not through addons.json.
+
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
 
