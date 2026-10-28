@@ -45,6 +45,8 @@ static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
 static int g_anchor = 0, g_vpX = 126;
 // opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
 static int g_outlineAlpha = 144;
+// Demo=1: draw several looks and places at once (see draw_demo); the settings above are ignored then
+static int g_demo = 0;
 static char g_face[64] = "Arial";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
@@ -74,6 +76,7 @@ static void load_ini(void) {
     g_anchor     = ini_int(L"Anchor", 0, 0, 1);
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 144, 0, 255);
+    g_demo       = ini_int(L"Demo", 0, 0, 1);
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
@@ -329,6 +332,71 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
+// ---------- Demo=1: several looks and places at once, to compare them in one match ----------
+// "box" = Style=2 (replay-panel box, Arial); "campaign" = white serif digits with a crisp black outline, no box, like
+// the campaign objective timers. Pairs: next to the Menu button (box, campaign left of it) and above the minimap
+// (box, campaign right of it). The minimap frame starts 221/1000 H above the bottom edge (2560x1440).
+static ID3DXFont *g_dfont[2]; static IDirect3DDevice9 *g_ddev[2]; static int g_dpx[2];
+static ID3DXFont *demo_font(IDirect3DDevice9 *dev, int i, const char *face, int px) {
+    if (g_ddev[i] == dev && g_dpx[i] == px) return g_dfont[i];
+    if (g_dfont[i]) { g_dfont[i]->lpVtbl->Release(g_dfont[i]); g_dfont[i] = NULL; }
+    g_ddev[i] = dev; g_dpx[i] = px;
+    if (FAILED(p_D3DXCreateFontA(dev, px, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                 ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face, &g_dfont[i]))) g_dfont[i] = NULL;
+    return g_dfont[i];
+}
+static void demo_text(ID3DXFont *f, const char *t, RECT r, DWORD fmt, DWORD color, DWORD outline, int o) {
+    static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    for (int i = 0; (outline >> 24) && i < 8; i++) {
+        RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
+        f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline);
+    }
+    RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
+    f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0xB0000000);       // drop shadow
+    f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color);
+}
+static void draw_demo(IDirect3DDevice9 *dev) {
+    int W, H;
+    if (!on_back_buffer(dev, &W, &H)) return;
+    g_bbCalls++;
+    int pxBox = 20 * H / 1080, pxCamp = 22 * H / 1080;
+    if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
+    ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = demo_font(dev, 1, "Book Antiqua", pxCamp);
+    if (!fb || !fc) return;
+    DWORD s = g_play / 1000; char t[16], z[16]; int i;
+    if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
+    else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
+    for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
+    z[i] = 0;
+    RECT m = {0, 0, 0, 0};
+    fb->lpVtbl->DrawTextA(fb, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
+    int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad, gap = 10 * H / 1000;
+    if (!ensure_box(dev, bw, bh)) return;
+    int oc = pxCamp >= 28 ? 2 : 1, ob = pxBox >= 28 ? 2 : 1;
+    RECT box[2], camp[2];
+    int top = 18 * H / 1000 - bh / 2, right = W - g_menuX * H / 1000;     // next to the Menu button
+    SetRect(&box[0], right - bw, top, right, top + bh);
+    SetRect(&camp[0], box[0].left - gap - W, top, box[0].left - gap, top + bh);
+    int cy = H - 239 * H / 1000, left = 7 * H / 1000;                    // above the minimap
+    SetRect(&box[1], left, cy - bh / 2, left + bw, cy - bh / 2 + bh);
+    SetRect(&camp[1], box[1].right + gap, box[1].top, box[1].right + gap + W, box[1].bottom);
+    D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
+    int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
+    IDirect3DDevice9_SetViewport(dev, &full);
+    if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: boxes first, then the text
+        for (int k = 0; k < 2; k++) {
+            float pos[3] = { (float)box[k].left, (float)box[k].top, 0.0f };
+            g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF);
+        }
+        for (int k = 0; k < 2; k++) {
+            demo_text(fb, t, box[k], DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER, 0xFFF0EEE4, 0, ob);
+            demo_text(fc, t, camp[k], DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | (k ? DT_LEFT : DT_RIGHT), 0xFFFFF8F0, 0xFF000000, oc);
+        }
+        g_sprite->lpVtbl->End(g_sprite);
+    }
+    if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
+}
+
 static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
     InterlockedIncrement(&g_totalCalls); g_calls++;
@@ -342,7 +410,7 @@ static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
                     run / 60000, run / 1000 % 60, g_ticks, run ? g_ticks * 1000.0 / run : 0.0);
     }
     if (vis) {
-        draw(dev, now);
+        if (g_demo) draw_demo(dev); else draw(dev, now);
         if (!g_diagDone && now - g_shownAt > 10000) {
             g_diagDone = 1;
             logmsg("EndScene in 10 s: %ld calls, %ld into the back buffer%s", g_calls, g_bbCalls,
@@ -356,12 +424,14 @@ static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
     if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
         if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
+        for (int i = 0; i < 2; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnLostDevice(g_dfont[i]);
         g_lost = 1;
     }
     HRESULT hr = o_Reset(dev, pp);
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
+        for (int i = 0; i < 2; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnResetDevice(g_dfont[i]);
         g_lost = 0;
     }
     logmsg("device Reset -> hr=0x%08lx", (unsigned long)hr);
