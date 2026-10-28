@@ -30,5 +30,5 @@ $(OUT)/CGNumbers.dll: cgnumbers/cgnumbers.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -ld3d9 -static-libgcc
 
 $(OUT)/MatchTimer.dll: matchtimer/matchtimer.c common/gamefont.h | $(OUT)
-	$(CC) $(CFLAGS) -shared -o $@ $< -lpsapi -static-libgcc -Wl,--kill-at
+	$(CC) $(CFLAGS) -shared -o $@ $< -lpsapi -static-libgcc
 

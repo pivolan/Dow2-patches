@@ -619,10 +619,6 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     if (box.right > W) box.right = W;
     box.left = box.right - bw; if (box.left < 0) { box.left = 0; box.right = bw; }
     box.bottom = box.top + bh;
-    {   // calibration: where the cursor and the box are while it is shown (once a second)
-        static DWORD last; DWORD now = GetTickCount();
-        if (now - last > 1000) { last = now; logmsg("menu tooltip: cursor %d,%d box %ld,%ld-%ld,%ld (%dx%d)", mx, my, box.left, box.top, box.right, box.bottom, W, H); }
-    }
     int haveBox = ensure_box(dev, bw, bh, k < 1 ? 1 : k);
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
