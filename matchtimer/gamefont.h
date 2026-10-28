@@ -284,9 +284,10 @@ static int gf_load(const char *want, const wchar_t *gameDir) {
 
 // ---------- the digits as a texture: white, alpha = coverage (4x4 samples, even-odd) ----------
 #define GF_M 3                                                       // margin around each glyph for the outline
-static IDirect3DTexture9 *g_gfTex; static IDirect3DDevice9 *g_gfDev; static int g_gfPx;
+static IDirect3DTexture9 *g_gfTex; static IDirect3DDevice9 *g_gfDev; static int g_gfPx, g_gfMadeWidth;
+// g_gfWidth (horizontal scale of the digits, percent) comes from the includer's settings
 static RECT g_gfSrc[GF_N]; static int g_gfAdv[GF_N], g_gfCell;     // source rects, advances and line height in px
-static void gf_raster(const GfSeg *sg, int n, float s, float ox, float oy, int w, int h, BYTE *out, int pitch) {
+static void gf_raster(const GfSeg *sg, int n, float sx, float s, float ox, float oy, int w, int h, BYTE *out, int pitch) {
     float acc[512], xs[256];
     if (w > 512) return;
     for (int y = 0; y < h; y++) {
@@ -296,7 +297,7 @@ static void gf_raster(const GfSeg *sg, int n, float s, float ox, float oy, int w
             for (int i = 0; i < n && nx < 256; i++) {
                 float y0 = oy + sg[i].y0 * s, y1 = oy + sg[i].y1 * s;
                 if ((y0 <= Y && Y < y1) || (y1 <= Y && Y < y0)) {
-                    float x0 = ox + sg[i].x0 * s, x1 = ox + sg[i].x1 * s;
+                    float x0 = ox + sg[i].x0 * sx, x1 = ox + sg[i].x1 * sx;
                     xs[nx++] = x0 + (Y - y0) * (x1 - x0) / (y1 - y0);
                 }
             }
@@ -315,12 +316,13 @@ static void gf_raster(const GfSeg *sg, int n, float s, float ox, float oy, int w
 }
 static int gf_ready(IDirect3DDevice9 *dev, int px) {
     if (!g_gf.ok) return 0;
-    if (g_gfTex && g_gfDev == dev && g_gfPx == px) return 1;
+    if (g_gfTex && g_gfDev == dev && g_gfPx == px && g_gfMadeWidth == g_gfWidth) return 1;
     if (g_gfTex) { IDirect3DTexture9_Release(g_gfTex); g_gfTex = NULL; }
-    g_gfDev = dev; g_gfPx = px;
+    g_gfDev = dev; g_gfPx = px; g_gfMadeWidth = g_gfWidth;
     float s = px / (g_gf.ascent + g_gf.descent);                     // px = the line's height, like a Windows font's
+    float sx = s * g_gfWidth / 100;
     int cell = (int)(px + 0.999f) + 2 * GF_M, tw = 0;
-    for (int c = 0; c < GF_N; c++) { g_gfAdv[c] = (int)(g_gf.adv[c] * s + 0.5f); tw += g_gfAdv[c] + 2 * GF_M + 2; }
+    for (int c = 0; c < GF_N; c++) { g_gfAdv[c] = (int)(g_gf.adv[c] * sx + 0.5f); tw += g_gfAdv[c] + 2 * GF_M + 2; }
     if (tw > 4096 || FAILED(IDirect3DDevice9_CreateTexture(dev, tw, cell, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_gfTex, NULL))) {
         g_gfTex = NULL; g_gf.ok = 0; logmsg("game font: texture %dx%d failed, back to a Windows font", tw, cell); return 0;
     }
@@ -331,7 +333,7 @@ static int gf_ready(IDirect3DDevice9 *dev, int px) {
     for (int c = 0; c < GF_N; c++) {
         int w = g_gfAdv[c] + 2 * GF_M;
         SetRect(&g_gfSrc[c], x, 0, x + w, cell);
-        gf_raster(g_gf.seg[c], g_gf.nseg[c], s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, (BYTE *)lr.pBits + x * 4, lr.Pitch);
+        gf_raster(g_gf.seg[c], g_gf.nseg[c], sx, s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, (BYTE *)lr.pBits + x * 4, lr.Pitch);
         x += w + 2;
     }
     IDirect3DTexture9_UnlockRect(g_gfTex, 0);
@@ -373,7 +375,7 @@ __declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cm
     if (!rgba || !grey) return;
     for (int c = 0; c < GF_N; c++) {
         int w = (int)(g_gf.adv[c] * s + 0.5f) + 2 * GF_M;
-        gf_raster(g_gf.seg[c], g_gf.nseg[c], s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, rgba + x * 4, tw * 4);
+        gf_raster(g_gf.seg[c], g_gf.nseg[c], s, s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, rgba + x * 4, tw * 4);
         x += w;
     }
     for (int i = 0; i < tw * cell; i++) grey[i] = rgba[i * 4 + 3];

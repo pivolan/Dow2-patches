@@ -52,6 +52,7 @@ static char g_face[64] = "Arial";
 // the game's own font, read from its files (gamefont.h); Font= naming it draws the digits with it
 #define GAME_FONT "Caslon Antique New"
 static char g_campFace[64] = GAME_FONT;            // Demo=1: font of the campaign style (CampaignFont=)
+static int g_gfWidth = 100;                        // GameFontWidth=: horizontal scale of the game font's digits, percent
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
     wchar_t s[16]; GetPrivateProfileStringW(L"MatchTimer", key, def, s, 16, g_ini);
@@ -81,6 +82,7 @@ static void load_ini(void) {
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 144, 0, 255);
     g_demo       = ini_int(L"Demo", 0, 0, 1);
+    g_gfWidth    = ini_int(L"GameFontWidth", 100, 50, 200);
     { wchar_t c[64]; GetPrivateProfileStringW(L"MatchTimer", L"CampaignFont", L"" GAME_FONT, c, 64, g_ini);
       WideCharToMultiByte(CP_ACP, 0, c, -1, g_campFace, sizeof g_campFace, NULL, NULL); }
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
@@ -344,8 +346,9 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
 // ---------- Demo=1: several looks and places at once, to compare them in one match ----------
 // "box" = Style=2 (replay-panel box, Arial); "campaign" = white serif digits with a crisp black outline, no box, like
 // the campaign objective timers. Pairs: next to the Menu button (box, campaign left of it) and above the minimap
-// (box, campaign right of it). The minimap frame starts 221/1000 H above the bottom edge (2560x1440).
-static ID3DXFont *g_dfont[2]; static IDirect3DDevice9 *g_ddev[2]; static int g_dpx[2]; static char g_dface[2][64];
+// (box, campaign right of it), and right of the VP bar box, game font, Book Antiqua to compare the fonts. The minimap
+// frame starts 221/1000 H above the bottom edge (2560x1440).
+static ID3DXFont *g_dfont[3]; static IDirect3DDevice9 *g_ddev[3]; static int g_dpx[3]; static char g_dface[3][64];
 static ID3DXFont *demo_font(IDirect3DDevice9 *dev, int i, const char *face, int px) {
     if (g_ddev[i] == dev && g_dpx[i] == px && !strcmp(g_dface[i], face)) return g_dfont[i];
     if (g_dfont[i]) { g_dfont[i]->lpVtbl->Release(g_dfont[i]); g_dfont[i] = NULL; }
@@ -384,25 +387,34 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad, gap = 10 * H / 1000;
     if (!ensure_box(dev, bw, bh)) return;
     int oc = pxCamp >= 28 ? 2 : 1, ob = pxBox >= 28 ? 2 : 1;
-    RECT box[2], camp[2];
+    RECT box[3], camp[2], ba;
     int top = 18 * H / 1000 - bh / 2, right = W - g_menuX * H / 1000;     // next to the Menu button
     SetRect(&box[0], right - bw, top, right, top + bh);
     SetRect(&camp[0], box[0].left - gap - W, top, box[0].left - gap, top + bh);
     int cy = H - 239 * H / 1000, left = 7 * H / 1000;                    // above the minimap
     SetRect(&box[1], left, cy - bh / 2, left + bw, cy - bh / 2 + bh);
     SetRect(&camp[1], box[1].right + gap, box[1].top, box[1].right + gap + W, box[1].bottom);
+    // right of the VP bar, to compare the fonts side by side: box (Arial), the game's Caslon, Book Antiqua
+    left = W / 2 + g_vpX * H / 1000;
+    SetRect(&box[2], left, top, left + bw, top + bh);
+    RECT gc = { box[2].right + gap, top, box[2].right + gap + W, top + bh };
+    int gw = game ? gf_width(t) : 0;
+    if (!game && fc) { RECT q = {0, 0, 0, 0}; fc->lpVtbl->DrawTextA(fc, NULL, t, -1, &q, DT_SINGLELINE | DT_CALCRECT, 0); gw = q.right; }
+    ID3DXFont *fa = demo_font(dev, 2, "Book Antiqua", pxCamp);
+    SetRect(&ba, gc.left + gw + 2 * gap, top, gc.left + gw + 2 * gap + W, top + bh);
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
     IDirect3DDevice9_SetViewport(dev, &full);
     if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: boxes first, then the text
-        for (int k = 0; k < 2; k++) {
+        for (int k = 0; k < 3; k++) {
             float pos[3] = { (float)box[k].left, (float)box[k].top, 0.0f };
             g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF);
         }
-        for (int k = 0; k < 2; k++) {
-            demo_text(fb, t, box[k], DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER, 0xFFF0EEE4, 0, ob);
+        for (int k = 0; k < 3; k++) demo_text(fb, t, box[k], DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER, 0xFFF0EEE4, 0, ob);
+        for (int k = 0; k < 2; k++)
             demo_text(fc, t, camp[k], DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | (k ? DT_LEFT : DT_RIGHT), 0xFFFFF8F0, 0xFF000000, oc);
-        }
+        demo_text(fc, t, gc, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xFF000000, oc);
+        if (fa) demo_text(fa, t, ba, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xFF000000, oc);
         g_sprite->lpVtbl->End(g_sprite);
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
@@ -435,14 +447,14 @@ static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
     if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
         if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
-        for (int i = 0; i < 2; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnLostDevice(g_dfont[i]);
+        for (int i = 0; i < 3; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnLostDevice(g_dfont[i]);
         g_lost = 1;
     }
     HRESULT hr = o_Reset(dev, pp);
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
-        for (int i = 0; i < 2; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnResetDevice(g_dfont[i]);
+        for (int i = 0; i < 3; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnResetDevice(g_dfont[i]);
         g_lost = 0;
     }
     logmsg("device Reset -> hr=0x%08lx", (unsigned long)hr);
