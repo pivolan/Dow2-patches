@@ -50,7 +50,7 @@ static int g_demo = 0;
 static char g_face[64] = "Arial";
 // FontFile=: a .ttf next to the DLL (or a full path), registered for this process only (FR_PRIVATE), so Font= can name
 // a font that isn't installed in Windows, e.g. the game's own Caslon Antique New exported from master_fonts
-static wchar_t g_fontFile[MAX_PATH]; static int g_fontFileDone;
+static wchar_t g_fontFile[MAX_PATH];
 static char g_campFace[64] = "Book Antiqua";      // Demo=1: font of the campaign style (CampaignFont=)
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
@@ -93,8 +93,8 @@ static void load_font_file(void) {
     if (!g_fontFile[0] || !wcscmp(done, g_fontFile)) return;
     wcscpy(done, g_fontFile);
     wchar_t p[MAX_PATH];
-    if (g_fontFile[0] == L'\' || (g_fontFile[0] && g_fontFile[1] == L':')) wcscpy(p, g_fontFile);
-    else { wcscpy(p, g_ini); wchar_t *sl = wcsrchr(p, L'\'); if (sl) sl[1] = 0; else p[0] = 0; wcsncat(p, g_fontFile, MAX_PATH - wcslen(p) - 1); }
+    if (g_fontFile[0] == L'\\' || (g_fontFile[0] && g_fontFile[1] == L':')) wcscpy(p, g_fontFile);
+    else { wcscpy(p, g_ini); wchar_t *sl = wcsrchr(p, L'\\'); if (sl) sl[1] = 0; else p[0] = 0; wcsncat(p, g_fontFile, MAX_PATH - wcslen(p) - 1); }
     int n = AddFontResourceExW(p, FR_PRIVATE, NULL);
     char a[MAX_PATH]; WideCharToMultiByte(CP_ACP, 0, p, -1, a, sizeof a, NULL, NULL);
     logmsg("FontFile %s: %s", a, n ? "loaded" : "NOT loaded (missing or not a font file)");
