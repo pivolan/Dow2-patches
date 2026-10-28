@@ -41,6 +41,8 @@ static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
 static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
+// Anchor=1 (Style=2): the box right of the victory points bar instead; VpX = its left edge from the screen centre
+static int g_anchor = 0, g_vpX = 126;
 static char g_face[64] = "Arial";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
@@ -67,6 +69,8 @@ static void load_ini(void) {
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
+    g_anchor     = ini_int(L"Anchor", 0, 0, 1);
+    g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
@@ -270,15 +274,21 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
     int o = px >= 28 ? 2 : 1;
     RECT r, box = {0}; DWORD fmt;
-    if (g_style == 2) {                                              // box of the Menu button's height, right edge next to it
+    if (g_style == 2) {                                              // box of the Menu button's height, next to it or to the VP bar
         char z[16]; int i;                                           // width from all-zero digits, so the box doesn't twitch
         for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
         z[i] = 0;
         RECT m = {0, 0, 0, 0};
         g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
         int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad;
-        int right = W - g_menuX * H / 1000, top = g_menuY * H / 1000 - bh / 2;
-        SetRect(&box, right - bw, top, right, top + bh);
+        int top = g_menuY * H / 1000 - bh / 2;
+        if (g_anchor) {                                              // right of the victory points bar (centred on the screen)
+            int left = W / 2 + g_vpX * H / 1000;
+            SetRect(&box, left, top, left + bw, top + bh);
+        } else {
+            int right = W - g_menuX * H / 1000;
+            SetRect(&box, right - bw, top, right, top + bh);
+        }
         r = box;
         fmt = DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER;
         if (!ensure_box(dev, bw, bh)) box.right = box.left;          // no texture: text only
