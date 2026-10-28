@@ -4,7 +4,8 @@
 // Invoke(method, flags, GFxValue* args, count)). When the engine sends Receive_PopulatePlayerList
 // to the lobby movie, we append the rating to the name in each player slot and replace
 // the slot tooltip (m_tooltip field) with "rating / wins / games / hours".
-// The main menu gets the own rating after the name too (Receive_SetGamerTag).
+// The main menu gets the own rating after the name too (Receive_SetGamerTag), and the stats tooltip on hover, which
+// we draw ourselves through Direct3D9: the menu has no tooltip there.
 // Data is fetched by a background thread from the stats service (<Server>/stats/api/lobby), which reads the public Relic API.
 // A name is first shown without numbers; they appear on the next lobby update (join, ready,
 // race change) and immediately in later lobbies (disk cache next to the DLL).
@@ -21,6 +22,8 @@
 #include <wchar.h>
 #include <ctype.h>
 #include <wctype.h>
+#define COBJMACROS
+#include <d3d9.h>
 
 #define HOOK_ADDR   0x0045DB6C
 #define HOOK_RESUME 0x0045DB71
@@ -193,6 +196,15 @@ typedef char (__fastcall *InvokeFn)(void *self, void *edx, const char *method, i
 static InvokeFn g_orig;
 static wchar_t g_nameBuf[16][128], g_tipBuf[16][320];
 
+// the stats tooltip (320 wchar_t): lobby slots and the main menu name
+static void format_tip(wchar_t *out, const wchar_t *name, const Entry *e, int wr, int games) {
+    wchar_t hours[48] = L"";
+    if (e->hours >= 0) _snwprintf(hours, 47, L"\nSteam hours: %d", e->hours);
+    _snwprintf(out, 319, L"%ls\nRelic rating: %d\nWin rate: %d%%  (%d W / %d L)\nGames: %d%ls",
+               name, e->rating, wr, e->wins, e->losses, games, hours);
+    out[319] = 0;
+}
+
 static void decorate(GFxValue *args, unsigned count) {
     if (count < HEADER_ARGS + SLOT_ARGS || (count - HEADER_ARGS) % SLOT_ARGS) {
         static int warned; if (!warned++) logmsg("PopulatePlayerList: unexpected arg count %u, not touching", count);
@@ -246,11 +258,7 @@ static void decorate(GFxValue *args, unsigned count) {
             _snwprintf(g_nameBuf[i], 127, L"%ls  [%d]", name, e->rating); g_nameBuf[i][127] = 0;
             a[A_NAME].v.ws = g_nameBuf[i];
         }
-        wchar_t hours[48] = L"";
-        if (e->hours >= 0) _snwprintf(hours, 47, L"\nSteam hours: %d", e->hours);
-        _snwprintf(g_tipBuf[i], 319, L"%ls\nRelic rating: %d\nWin rate: %d%%  (%d W / %d L)\nGames: %d%ls",
-                   name, e->rating, wr, e->wins, e->losses, games, hours);
-        g_tipBuf[i][319] = 0;
+        format_tip(g_tipBuf[i], name, e, wr, games);
         a[A_TOOLTIP].type = GFX_WSTRING; a[A_TOOLTIP].v.ws = g_tipBuf[i];
     }
     {   // lobby roster changed - log who is there
@@ -351,6 +359,8 @@ static void probe(void *movie, const char *method, GFxValue *args, unsigned coun
 // main menu: own name in the top right corner, Receive_SetGamerTag(wstr name, num). Looked up by name, as the lobby
 // does for the own slot. Numbers come from the cache; a name not cached yet is fetched and shows up the next time.
 static wchar_t g_tagBuf[128];
+static volatile int g_front;          // the menu name bar is on screen: SetGamerTag seen and no match since
+static wchar_t g_menuName[64];        // own name from SetGamerTag (under g_lock), for the main menu tooltip
 static void decorate_gamertag(GFxValue *args) {
     if (args[0].type != GFX_WSTRING || !args[0].v.ws || !args[0].v.ws[0] || args[0].v.ws == g_tagBuf) return;
     const wchar_t *name = args[0].v.ws; wchar_t key[64]; wcsncpy(key, name, 63); key[63] = 0;
@@ -363,6 +373,7 @@ static void decorate_gamertag(GFxValue *args) {
         if (!dup && g_npending < 16) { wcsncpy(g_pending[g_npending++], key, 63); want = 1; }
         if (!e) { e = find_or_add(key); e->fetched = 0; }
     }
+    wcscpy(g_menuName, key); g_front = 1;
     if (e->known && g_stats && g_showInName) {
         _snwprintf(g_tagBuf, 127, L"%ls  [%d]", name, e->rating); g_tagBuf[127] = 0;
         args[0].v.ws = g_tagBuf;
@@ -395,6 +406,239 @@ static void install(void) {
     logmsg("hooked Invoke at %08X", HOOK_ADDR);
 }
 
+// ---------- main menu: stats tooltip on hover over the own name ----------
+// The menu's Flash has no tooltip there and the game sends only the name, so we draw it ourselves through Direct3D9
+// (EndScene through the device vtable + ID3DXFont, as MatchTimer does), in a box like the game's own.
+#define IAT_SIM_PRE 0x00F88154        // World::SimulatePre (__thiscall, ecx = World): a match starts, the menu is gone
+
+typedef struct ID3DXSprite ID3DXSprite;
+typedef struct {
+    HRESULT (WINAPI *QueryInterface)(ID3DXSprite *, REFIID, void **);
+    ULONG   (WINAPI *AddRef)(ID3DXSprite *);
+    ULONG   (WINAPI *Release)(ID3DXSprite *);
+    void *GetDevice, *GetTransform, *SetTransform, *SetWorldViewRH, *SetWorldViewLH;
+    HRESULT (WINAPI *Begin)(ID3DXSprite *, DWORD flags);
+    HRESULT (WINAPI *Draw)(ID3DXSprite *, IDirect3DTexture9 *, const RECT *src, const float *center, const float *pos, D3DCOLOR);
+    void *Flush;
+    HRESULT (WINAPI *End)(ID3DXSprite *);
+    HRESULT (WINAPI *OnLostDevice)(ID3DXSprite *);
+    HRESULT (WINAPI *OnResetDevice)(ID3DXSprite *);
+} ID3DXSpriteVtbl;
+struct ID3DXSprite { ID3DXSpriteVtbl *lpVtbl; };
+typedef struct ID3DXFont ID3DXFont;
+typedef struct {
+    HRESULT (WINAPI *QueryInterface)(ID3DXFont *, REFIID, void **);
+    ULONG   (WINAPI *AddRef)(ID3DXFont *);
+    ULONG   (WINAPI *Release)(ID3DXFont *);
+    void *GetDevice, *GetDescA, *GetDescW, *GetTextMetricsA, *GetTextMetricsW, *GetDC, *GetGlyphData;
+    void *PreloadCharacters, *PreloadGlyphs, *PreloadTextA, *PreloadTextW;
+    void *DrawTextA;
+    INT     (WINAPI *DrawTextW)(ID3DXFont *, ID3DXSprite *, const wchar_t *, INT, RECT *, DWORD format, D3DCOLOR);
+    HRESULT (WINAPI *OnLostDevice)(ID3DXFont *);
+    HRESULT (WINAPI *OnResetDevice)(ID3DXFont *);
+} ID3DXFontVtbl;
+struct ID3DXFont { ID3DXFontVtbl *lpVtbl; };
+typedef HRESULT (WINAPI *D3DXCreateFontA_t)(IDirect3DDevice9 *, INT height, UINT width, UINT weight, UINT miplevels, BOOL italic,
+    DWORD charset, DWORD prec, DWORD quality, DWORD pitchfam, const char *face, ID3DXFont **out);
+typedef HRESULT (WINAPI *D3DXCreateSprite_t)(IDirect3DDevice9 *, ID3DXSprite **out);
+static D3DXCreateFontA_t p_D3DXCreateFontA;
+static D3DXCreateSprite_t p_D3DXCreateSprite;
+#define D3DXSPRITE_ALPHABLEND 0x10
+
+typedef void (__fastcall *ThisFn)(void *, void *);
+static ThisFn o_pre;
+static void __fastcall hk_pre(void *self, void *edx) { g_front = 0; o_pre(self, edx); }
+// slot already hooked by another DLL (MatchTimer, FrameProbe) - chain onto it if it points to executable code
+static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
+    HMODULE m = GetModuleHandleA(dll); MODULEINFO mi;
+    if (!m || !GetModuleInformation(GetCurrentProcess(), m, &mi, sizeof mi) || IsBadReadPtr((void *)slot, 4)) return 0;
+    DWORD cur = *(DWORD *)slot;
+    if (cur < (DWORD)mi.lpBaseOfDll || cur >= (DWORD)mi.lpBaseOfDll + mi.SizeOfImage) {
+        MEMORY_BASIC_INFORMATION mb;
+        if (!VirtualQuery((void *)cur, &mb, sizeof mb) || !(mb.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) return 0;
+    }
+    DWORD old; if (!VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) return 0;
+    *orig = (void *)cur; *(DWORD *)slot = (DWORD)fn;
+    VirtualProtect((void *)slot, 4, old, &old);
+    return 1;
+}
+
+typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
+typedef HRESULT (WINAPI *Reset_t)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
+static EndScene_t o_EndScene; static Reset_t o_Reset;
+static ID3DXFont *g_font; static ID3DXSprite *g_sprite;
+static IDirect3DDevice9 *g_fontDev; static int g_fontPx, g_lost;
+static IDirect3DTexture9 *g_box; static IDirect3DDevice9 *g_boxDev; static int g_boxW, g_boxH;
+
+static int ensure_font(IDirect3DDevice9 *dev, int px) {
+    if (g_fontDev == dev && g_fontPx == px) return g_font && g_sprite;   // made already (or failed: no retry every frame)
+    if (g_font) { g_font->lpVtbl->Release(g_font); g_font = NULL; }
+    if (g_sprite) { g_sprite->lpVtbl->Release(g_sprite); g_sprite = NULL; }
+    g_fontDev = dev; g_fontPx = px;
+    HRESULT hf = p_D3DXCreateFontA(dev, px, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                   ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial", &g_font);
+    HRESULT hs = p_D3DXCreateSprite(dev, &g_sprite);
+    logmsg("tooltip font %dpx -> hr=0x%08lx, sprite -> hr=0x%08lx", px, (unsigned long)hf, (unsigned long)hs);
+    if (FAILED(hf)) g_font = NULL;
+    if (FAILED(hs)) g_sprite = NULL;
+    return g_font && g_sprite;
+}
+// box like the game's own (the "Fog of War Off" box of the replay panel): dark frame with cut corners, steel line,
+// slate-blue fill. k = line thickness scale (1 at 1440p).
+static DWORD box_pixel(int x, int y, int w, int h, float k) {
+    float c = 5 * k, px = x + 0.5f, py = y + 0.5f, R = 0.7071f;
+    float d = px; if (py < d) d = py; if (w - px < d) d = w - px; if (h - py < d) d = h - py;
+    float e[4] = { (px + py - c) * R, (w - px + py - c) * R, (px + h - py - c) * R, (w - px + h - py - c) * R };
+    for (int i = 0; i < 4; i++) if (e[i] < d) d = e[i];
+    if (d <= 0) return 0;
+    DWORD rgb;
+    if (d < 1) rgb = 0x5A6A6C;
+    else if (d < 3.5f * k) rgb = 0x0E1D29;
+    else if (d < 4.5f * k) rgb = 0x48606E;
+    else {
+        float t = py / h; rgb = 0;
+        for (int s = 0; s < 24; s += 8)
+            rgb |= (DWORD)(((0x2D4556 >> s) & 255) + (((int)((0x22384A >> s) & 255) - (int)((0x2D4556 >> s) & 255)) * t)) << s;
+    }
+    return (d < 1 ? (DWORD)(d * 255) : 255) << 24 | rgb;
+}
+static int ensure_box(IDirect3DDevice9 *dev, int w, int h, float k) {
+    if (g_box && g_boxDev == dev && g_boxW == w && g_boxH == h) return 1;
+    if (g_box) { IDirect3DTexture9_Release(g_box); g_box = NULL; }
+    g_boxDev = dev; g_boxW = w; g_boxH = h;
+    if (FAILED(IDirect3DDevice9_CreateTexture(dev, w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_box, NULL))) { g_box = NULL; return 0; }
+    D3DLOCKED_RECT lr;
+    if (FAILED(IDirect3DTexture9_LockRect(g_box, 0, &lr, NULL, 0))) { IDirect3DTexture9_Release(g_box); g_box = NULL; return 0; }
+    for (int y = 0; y < h; y++) {
+        DWORD *row = (DWORD *)((BYTE *)lr.pBits + y * lr.Pitch);
+        for (int x = 0; x < w; x++) row[x] = box_pixel(x, y, w, h, k);
+    }
+    IDirect3DTexture9_UnlockRect(g_box, 0);
+    return 1;
+}
+static int on_back_buffer(IDirect3DDevice9 *dev, int *w, int *h) {
+    IDirect3DSurface9 *bb = NULL, *rt = NULL; D3DSURFACE_DESC d; int ok = 0;
+    if (SUCCEEDED(IDirect3DDevice9_GetBackBuffer(dev, 0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+        if (SUCCEEDED(IDirect3DDevice9_GetRenderTarget(dev, 0, &rt)) && rt) {
+            if (rt == bb && SUCCEEDED(IDirect3DSurface9_GetDesc(bb, &d))) { *w = d.Width; *h = d.Height; ok = 1; }
+            IDirect3DSurface9_Release(rt);
+        }
+        IDirect3DSurface9_Release(bb);
+    }
+    return ok;
+}
+static void draw_tip(IDirect3DDevice9 *dev) {
+    static wchar_t tip[320];
+    int W, H;
+    if (!g_stats || g_lost || !on_back_buffer(dev, &W, &H)) return;
+    D3DDEVICE_CREATION_PARAMETERS cp; RECT cr; POINT p;
+    if (FAILED(IDirect3DDevice9_GetCreationParameters(dev, &cp)) || !cp.hFocusWindow || GetForegroundWindow() != cp.hFocusWindow) return;
+    if (!GetCursorPos(&p) || !ScreenToClient(cp.hFocusWindow, &p) || !GetClientRect(cp.hFocusWindow, &cr) || cr.right <= 0 || cr.bottom <= 0) return;
+    int mx = p.x * W / cr.right, my = p.y * H / cr.bottom;
+    // the name bar in the top right corner, in 1/1000 of the screen height from the right edge (measured at 2560x1440)
+    int L = W - 533 * H / 1000, R = W - 142 * H / 1000, T = 20 * H / 1000, B = 70 * H / 1000;
+    if (mx < L || mx > R || my < T || my > B) return;
+    tip[0] = 0;                                                      // numbers fetched after SetGamerTag count too
+    EnterCriticalSection(&g_lock);
+    Entry *e = g_menuName[0] ? find(g_menuName) : NULL;
+    if (e && e->known) {
+        int games = e->wins + e->losses, wr = games ? (e->wins * 100 + games / 2) / games : 0;
+        format_tip(tip, g_menuName, e, wr, games);
+    }
+    LeaveCriticalSection(&g_lock);
+    if (!tip[0]) return;
+    int px = 18 * H / 1080; if (px < 10) px = 10;
+    if (!ensure_font(dev, px)) return;
+    RECT m = {0, 0, 0, 0};
+    g_font->lpVtbl->DrawTextW(g_font, NULL, tip, -1, &m, DT_CALCRECT | DT_LEFT, 0);
+    int pad = px * 7 / 10, bw = m.right - m.left + 2 * pad, bh = m.bottom - m.top + 2 * pad;
+    RECT box = { R - bw, B + 6 * H / 1000, R, B + 6 * H / 1000 + bh };
+    int haveBox = ensure_box(dev, bw, bh, H / 1440.0f < 1 ? 1 : H / 1440.0f);
+    RECT r = { box.left + pad, box.top + pad, box.right - pad, box.bottom - pad }, s = r;
+    OffsetRect(&s, 1, 1);
+    D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
+    int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
+    IDirect3DDevice9_SetViewport(dev, &full);
+    if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: box first, then the text
+        if (haveBox) { float pos[3] = { (float)box.left, (float)box.top, 0.0f }; g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF); }
+        g_font->lpVtbl->DrawTextW(g_font, g_sprite, tip, -1, &s, DT_LEFT | DT_NOCLIP, 0xB0000000);
+        g_font->lpVtbl->DrawTextW(g_font, g_sprite, tip, -1, &r, DT_LEFT | DT_NOCLIP, 0xFFF0EEE4);
+        g_sprite->lpVtbl->End(g_sprite);
+    }
+    if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
+}
+static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
+    if (g_front) draw_tip(dev);
+    return o_EndScene(dev);
+}
+// ID3DXFont/ID3DXSprite hold state blocks and video memory: they must let go before Reset or Reset fails
+static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp) {
+    if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
+        if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
+        if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
+        g_lost = 1;
+    }
+    HRESULT hr = o_Reset(dev, pp);
+    if (g_lost && SUCCEEDED(hr)) {
+        if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
+        if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
+        g_lost = 0;
+    }
+    return hr;
+}
+static void *vt_hook(void **vtbl, int index, void *fn) {
+    DWORD old;
+    VirtualProtect(&vtbl[index], sizeof(void *), PAGE_EXECUTE_READWRITE, &old);
+    void *prev = vtbl[index];
+    vtbl[index] = fn;
+    VirtualProtect(&vtbl[index], sizeof(void *), old, &old);
+    return prev;
+}
+// create a throwaway device to reach the device vtable (shared with the game's device), then hook it
+static int install_d3d_hooks(void) {
+    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
+    IDirect3D9 *(WINAPI *pCreate)(UINT) = d3d9 ? (void *)GetProcAddress(d3d9, "Direct3DCreate9") : NULL;
+    if (!pCreate) return 0;
+    IDirect3D9 *d3d = pCreate(D3D_SDK_VERSION);
+    if (!d3d) return 0;
+    WNDCLASSA wc = {0}; wc.lpfnWndProc = DefWindowProcA; wc.hInstance = GetModuleHandleA(NULL); wc.lpszClassName = "lsprobe";
+    RegisterClassA(&wc);
+    HWND hwnd = CreateWindowA("lsprobe", "ls", WS_OVERLAPPED, 0, 0, 8, 8, NULL, NULL, wc.hInstance, NULL);
+    D3DPRESENT_PARAMETERS pp = {0};
+    pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD; pp.BackBufferFormat = D3DFMT_UNKNOWN; pp.hDeviceWindow = hwnd;
+    IDirect3DDevice9 *dev = NULL;
+    HRESULT hr = IDirect3D9_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_NOWINDOWCHANGES, &pp, &dev);
+    if (FAILED(hr) || !dev) {
+        logmsg("tooltip: temp CreateDevice failed hr=0x%08lx", (unsigned long)hr);
+        IDirect3D9_Release(d3d); if (hwnd) DestroyWindow(hwnd); return 0;
+    }
+    void **vtbl = *(void ***)dev;
+    o_Reset    = (Reset_t)    vt_hook(vtbl, 16, (void *)hk_Reset);
+    o_EndScene = (EndScene_t) vt_hook(vtbl, 42, (void *)hk_EndScene);
+    IDirect3DDevice9_Release(dev);
+    IDirect3D9_Release(d3d);
+    if (hwnd) DestroyWindow(hwnd);
+    return 1;
+}
+static DWORD WINAPI tip_worker(LPVOID _) {
+    const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
+    for (int i = 0; vers[i]; i++) {
+        HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
+        p_D3DXCreateFontA = (D3DXCreateFontA_t)GetProcAddress(h, "D3DXCreateFontA");
+        p_D3DXCreateSprite = (D3DXCreateSprite_t)GetProcAddress(h, "D3DXCreateSprite");
+        if (p_D3DXCreateFontA && p_D3DXCreateSprite) break;
+    }
+    if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("tooltip: no d3dx9_*.dll, no main menu tooltip"); return 0; }
+    for (int i = 0, pre = 0; i < 120; i++) {
+        if (!pre) pre = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre);
+        if (pre && GetModuleHandleA("d3d9.dll") && install_d3d_hooks()) { logmsg("main menu tooltip hooks installed"); return 0; }
+        Sleep(1000);
+    }
+    logmsg("tooltip: hooks not installed (no World::SimulatePre import or no d3d9.dll), no main menu tooltip");
+    return 0;
+}
+
 // one copy per game process: a patch can come both from Elite_DLLs (launcher) and from dow2-patches\ (winmm loader)
 static int already_loaded(const char *name) {
     char n[96]; wsprintfA(n, "Local\\dow2patch_%s_%lu", name, GetCurrentProcessId());
@@ -414,10 +658,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.2%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.7.3%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
+    if (g_stats) CloseHandle(CreateThread(NULL, 0, tip_worker, NULL, 0, NULL));
     return TRUE;
 }
 
