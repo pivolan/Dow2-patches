@@ -45,7 +45,7 @@ cgnumbers/
 
 matchtimer/
     Match clock (experimental). MM:SS of game time since the match started (pauses not counted), in a box
-    next to the Menu button like the game's own, through Direct3D9; can use the game's own font (read from its files).
+    next to the Menu button like the game's own, in the game's own font (read from its files), through Direct3D9.
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 

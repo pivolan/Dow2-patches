@@ -37,8 +37,8 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineOnly = 0;
-static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 21, g_onlineOnly = 0;
+static DWORD g_color = 0xFFFFF8F0, g_outline = 0;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
@@ -47,7 +47,7 @@ static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
 static int g_anchor = 0, g_vpX = 126;
 // opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
 static int g_outlineAlpha = 160;
-static char g_face[64] = "Arial";
+static char g_face[64] = "Caslon Antique New";
 // the game's own font, read from its files (gamefont.h); Font= naming it draws the digits with it
 #define GAME_FONT "Caslon Antique New"
 static int g_gfWidth = 100;                        // GameFontWidth=: horizontal scale of the game font's digits, percent
@@ -67,9 +67,9 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 20, 8, 200);
+    g_size       = ini_int(L"Size", 21, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"F0EEE4");
+    g_color      = ini_color(L"Color", L"FFF8F0");
     g_outline    = ini_color(L"Outline", L"");
     g_style      = ini_int(L"Style", 2, 0, 2);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
@@ -80,7 +80,7 @@ static void load_ini(void) {
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 160, 0, 255);
     g_gfWidth    = ini_int(L"GameFontWidth", 100, 50, 200);
-    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
+    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Caslon Antique New", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
 static void reload_ini(DWORD now) {
