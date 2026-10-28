@@ -364,6 +364,7 @@ static void gf_draw(ID3DXSprite *sp, const char *t, const RECT *r, DWORD fmt, DW
 __declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cmd, int show) {
     wchar_t dir[MAX_PATH], out[MAX_PATH];
     MultiByteToWideChar(CP_ACP, 0, cmd, -1, dir, MAX_PATH);
+    for (size_t n = wcslen(dir); n && dir[n - 1] == L' '; ) dir[--n] = 0;          // rundll32 adds a trailing space
     if (!gf_load(GAME_FONT, dir)) return;
     float s = 48 / (g_gf.ascent + g_gf.descent);
     int cell = 48 + 2 * GF_M, tw = 0, x = 0;
