@@ -131,24 +131,24 @@ static BYTE *sga_read(const wchar_t *path, const char *want, DWORD *size) {
     if (f == INVALID_HANDLE_VALUE) return NULL;
     BYTE h[184], *toc = NULL, *packed = NULL, *out = NULL; DWORD got;
     LARGE_INTEGER at;
-    if (!ReadFile(f, h, sizeof h, &got, NULL) || got != sizeof h || memcmp(h, "_ARCHIVE", 8) || *(DWORD *)(h + 8) != 5) goto done;
+    if (!ReadFile(f, h, sizeof h, &got, NULL) || got != sizeof h || memcmp(h, "_ARCHIVE", 8) || *(DWORD *)(h + 8) != 5) { logmsg("game font: not an SGA v5 archive"); goto done; }
     DWORD tocSize = *(DWORD *)(h + 172), dataStart = *(DWORD *)(h + 176), tocOff = *(DWORD *)(h + 180);
-    if (tocSize < 24 || tocSize > 64u << 20) goto done;
+    if (tocSize < 24 || tocSize > 64u << 20) { logmsg("game font: odd TOC size %lu", tocSize); goto done; }
     toc = malloc(tocSize); at.QuadPart = tocOff;
-    if (!toc || !SetFilePointerEx(f, at, NULL, FILE_BEGIN) || !ReadFile(f, toc, tocSize, &got, NULL) || got != tocSize) goto done;
+    if (!toc || !SetFilePointerEx(f, at, NULL, FILE_BEGIN) || !ReadFile(f, toc, tocSize, &got, NULL) || got != tocSize) { logmsg("game font: TOC read failed"); goto done; }
     DWORD fo = *(DWORD *)(toc + 12), so = *(DWORD *)(toc + 18); WORD fc = *(WORD *)(toc + 16);
-    if (fo + fc * 22u > tocSize || so >= tocSize) goto done;
+    if (fo + fc * 22u > tocSize || so >= tocSize) { logmsg("game font: odd TOC (files %lu+%u, strings %lu)", fo, fc, so); goto done; }
     for (unsigned i = 0; i < fc; i++) {
         BYTE *e = toc + fo + i * 22;
         DWORD no = so + *(DWORD *)e;
         if (no >= tocSize || strncmp((char *)toc + no, want, tocSize - no)) continue;
         DWORD off = *(DWORD *)(e + 4), csz = *(DWORD *)(e + 8), dsz = *(DWORD *)(e + 12);
-        if (csz < 2 || csz > 64u << 20 || dsz > 64u << 20) break;
+        if (csz < 2 || csz > 64u << 20 || dsz > 64u << 20) { logmsg("game font: %s: odd sizes %lu/%lu", want, csz, dsz); break; }
         packed = malloc(csz); out = malloc(dsz ? dsz : 1); at.QuadPart = (LONGLONG)dataStart + off;
-        if (!packed || !out || !SetFilePointerEx(f, at, NULL, FILE_BEGIN) || !ReadFile(f, packed, csz, &got, NULL) || got != csz) break;
+        if (!packed || !out || !SetFilePointerEx(f, at, NULL, FILE_BEGIN) || !ReadFile(f, packed, csz, &got, NULL) || got != csz) { logmsg("game font: %s: read failed", want); break; }
         if (csz == dsz) { memcpy(out, packed, dsz); *size = dsz; }
         else if (inflate_raw(packed + 2, csz - 2, out, dsz) == (int)dsz) *size = dsz;   // skip the zlib header
-        else break;
+        else { logmsg("game font: %s: inflate failed (%d of %lu bytes)", want, inflate_raw(packed + 2, csz - 2, out, dsz), dsz); break; }
         free(packed); free(toc); CloseHandle(f);
         return out;
     }
