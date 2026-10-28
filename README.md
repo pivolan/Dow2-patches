@@ -44,7 +44,8 @@ cgnumbers/
     the game's Direct3D9 (DXVK-safe). Stage 1 proves the render path; reading squads/groups is stage 2.
 
 matchtimer/
-    Match clock (experimental). MM:SS of real time since the match started, drawn through the game's
+    Match clock (experimental). MM:SS of game time since the match started, in a box next to the Menu button
+    drawn like the game's own (replay panel), through the game's
     Direct3D9 like CGNumbers. Starts with the first simulation tick after the loading screen and keeps running
     through lags; shown in every game, OnlineOnly=1 keeps it to live multiplayer. Position, size and colours
     in MatchTimer.ini, picked up while the game runs.

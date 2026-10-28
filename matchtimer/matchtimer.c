@@ -36,11 +36,12 @@ static void logmsg(const char *fmt, ...) {
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
 static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineOnly = 0;
-static DWORD g_color = 0xFFC8D2D4, g_outline = 0;
+static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
-static int g_style = 1, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 17;
-static char g_face[64] = "Book Antiqua";
+// Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
+static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
+static char g_face[64] = "Arial";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
     wchar_t s[16]; GetPrivateProfileStringW(L"MatchTimer", key, def, s, 16, g_ini);
@@ -59,14 +60,14 @@ static void load_ini(void) {
     g_align      = ini_int(L"Align", 1, 0, 2);
     g_size       = ini_int(L"Size", 20, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"C8D2D4");
+    g_color      = ini_color(L"Color", L"F0EEE4");
     g_outline    = ini_color(L"Outline", L"");
-    g_style      = ini_int(L"Style", 1, 0, 1);
+    g_style      = ini_int(L"Style", 2, 0, 2);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
-    g_menuY      = ini_int(L"MenuY", 17, 0, 1000);
-    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Book Antiqua", f, 64, g_ini);
+    g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
+    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
 static void reload_ini(DWORD now) {
@@ -145,7 +146,8 @@ typedef struct {
     ULONG   (WINAPI *Release)(ID3DXSprite *);
     void *GetDevice, *GetTransform, *SetTransform, *SetWorldViewRH, *SetWorldViewLH;
     HRESULT (WINAPI *Begin)(ID3DXSprite *, DWORD flags);
-    void *Draw, *Flush;
+    HRESULT (WINAPI *Draw)(ID3DXSprite *, IDirect3DTexture9 *, const RECT *src, const float *center, const float *pos, D3DCOLOR);
+    void *Flush;
     HRESULT (WINAPI *End)(ID3DXSprite *);
     HRESULT (WINAPI *OnLostDevice)(ID3DXSprite *);
     HRESULT (WINAPI *OnResetDevice)(ID3DXSprite *);
@@ -170,7 +172,6 @@ typedef HRESULT (WINAPI *D3DXCreateSprite_t)(IDirect3DDevice9 *, ID3DXSprite **o
 static D3DXCreateFontA_t p_D3DXCreateFontA;
 static D3DXCreateSprite_t p_D3DXCreateSprite;
 #define D3DXSPRITE_ALPHABLEND   0x10
-#define D3DXSPRITE_SORT_TEXTURE 0x20
 
 // ---------- drawing (render thread) ----------
 typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
@@ -198,6 +199,53 @@ static int ensure_font(IDirect3DDevice9 *dev, int px) {
     if (FAILED(hs)) g_sprite = NULL;
     return g_font && g_sprite;
 }
+// ---------- Style=2 box: a texture painted once per size, colours taken from the replay panel at 1440p ----------
+// The game's box is 37 px high there: a dark frame with cut corners, a thin steel line inside it, slate-blue fill.
+static IDirect3DTexture9 *g_box; static IDirect3DDevice9 *g_boxDev; static int g_boxW, g_boxH;
+static DWORD mix(DWORD a, DWORD b, float t) {                        // RGB lerp
+    DWORD r = 0;
+    for (int s = 0; s < 24; s += 8) r |= (DWORD)(((a >> s) & 255) + (((int)((b >> s) & 255) - (int)((a >> s) & 255)) * t)) << s;
+    return r;
+}
+static DWORD box_pixel(int x, int y, int w, int h) {
+    float k = h / 37.0f, c = 5 * k, px = x + 0.5f, py = y + 0.5f, R = 0.7071f;
+    float d = px; if (py < d) d = py; if (w - px < d) d = w - px; if (h - py < d) d = h - py;      // distance to the edge
+    float e[4] = { (px + py - c) * R, (w - px + py - c) * R, (px + h - py - c) * R, (w - px + h - py - c) * R };
+    for (int i = 0; i < 4; i++) if (e[i] < d) d = e[i];                                        // cut corners
+    if (d <= 0) return 0;
+    DWORD rgb;
+    if (d < 1) rgb = 0x5A6A6C;                                         // light rim against the scene
+    else if (d < 3.5f * k) rgb = 0x0E1D29;                             // dark frame
+    else if (d < 4.5f * k) rgb = 0x48606E;                             // steel line
+    else {                                                             // fill, a little lighter at the top, with grain
+        rgb = mix(0x2D4556, 0x22384A, py / h);
+        unsigned n = (unsigned)(x * 73856093u ^ y * 19349663u); n = (n ^ (n >> 13)) * 1274126177u;
+        int g = (int)((n >> 24) % 7) - 3;
+        DWORD o = 0;
+        for (int s = 0; s < 24; s += 8) { int v = (int)((rgb >> s) & 255) + g; o |= (DWORD)(v < 0 ? 0 : v > 255 ? 255 : v) << s; }
+        rgb = o;
+    }
+    DWORD a = d < 1 ? (DWORD)(d * 255) : 255;                          // soft outer edge
+    return a << 24 | rgb;
+}
+static int ensure_box(IDirect3DDevice9 *dev, int w, int h) {
+    if (g_box && g_boxDev == dev && g_boxW == w && g_boxH == h) return 1;
+    if (g_box) { IDirect3DTexture9_Release(g_box); g_box = NULL; }
+    g_boxDev = dev; g_boxW = w; g_boxH = h;
+    // MANAGED: survives a device Reset on its own
+    if (FAILED(IDirect3DDevice9_CreateTexture(dev, w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_box, NULL))) {
+        logmsg("box texture %dx%d failed", w, h); g_box = NULL; return 0;
+    }
+    D3DLOCKED_RECT lr;
+    if (FAILED(IDirect3DTexture9_LockRect(g_box, 0, &lr, NULL, 0))) { IDirect3DTexture9_Release(g_box); g_box = NULL; return 0; }
+    for (int y = 0; y < h; y++) {
+        DWORD *row = (DWORD *)((BYTE *)lr.pBits + y * lr.Pitch);
+        for (int x = 0; x < w; x++) row[x] = box_pixel(x, y, w, h);
+    }
+    IDirect3DTexture9_UnlockRect(g_box, 0);
+    return 1;
+}
+
 // only the frame itself gets the clock, not passes into textures (shadows, minimap...)
 static int on_back_buffer(IDirect3DDevice9 *dev, int *w, int *h) {
     IDirect3DSurface9 *bb = NULL, *rt = NULL; D3DSURFACE_DESC d; int ok = 0;
@@ -221,8 +269,20 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
     int o = px >= 28 ? 2 : 1;
-    RECT r; DWORD fmt;
-    if (g_style) {                                                   // right edge next to the Menu button, centred on it
+    RECT r, box = {0}; DWORD fmt;
+    if (g_style == 2) {                                              // box of the Menu button's height, right edge next to it
+        char z[16]; int i;                                           // width from all-zero digits, so the box doesn't twitch
+        for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
+        z[i] = 0;
+        RECT m = {0, 0, 0, 0};
+        g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
+        int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad;
+        int right = W - g_menuX * H / 1000, top = g_menuY * H / 1000 - bh / 2;
+        SetRect(&box, right - bw, top, right, top + bh);
+        r = box;
+        fmt = DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER;
+        if (!ensure_box(dev, bw, bh)) box.right = box.left;          // no texture: text only
+    } else if (g_style) {                                            // right edge next to the Menu button, centred on it
         int right = W - g_menuX * H / 1000, cy = g_menuY * H / 1000;
         SetRect(&r, right - W, cy - px, right, cy + px);
         fmt = DT_SINGLELINE | DT_NOCLIP | DT_RIGHT | DT_VCENTER;
@@ -234,7 +294,11 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
     IDirect3DDevice9_SetViewport(dev, &full);                        // the game may have left a smaller viewport
-    if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND | D3DXSPRITE_SORT_TEXTURE))) {
+    if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: box first, then the text
+        if (box.right > box.left) {
+            float pos[3] = { (float)box.left, (float)box.top, 0.0f };
+            g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF);
+        }
         // optional outline (Outline= empty: none); Style=1 makes it a half-transparent halo
         DWORD halo = g_style ? (g_outline & 0xFFFFFF) | 0x90000000 : g_outline;
         static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
