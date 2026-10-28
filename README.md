@@ -44,8 +44,8 @@ cgnumbers/
     the game's Direct3D9 (DXVK-safe). Stage 1 proves the render path; reading squads/groups is stage 2.
 
 matchtimer/
-    Match clock (experimental). MM:SS of game time since the match started (pauses not counted), next
-    to the Menu button in the game's own font (read from its files) like the campaign timers, through Direct3D9.
+    Match clock (experimental). MM:SS of game time since the match started (pauses not counted), in a box
+    next to the Menu button like the game's own, through Direct3D9; can use the game's own font (read from its files).
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 

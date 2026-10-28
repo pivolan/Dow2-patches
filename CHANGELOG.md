@@ -5,8 +5,8 @@ version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entri
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
 ## 0.1.2 — 2026-10-28
-- MatchTimer v2: the look of the campaign timers in the game's own Caslon Antique New, read from the player's game files
-  (common/gamefont.h, nothing of the game shipped); Style=2 box like the game's, Anchor=1 next to the VP bar.
+- MatchTimer v2: Font=Caslon Antique New draws the digits in the game's own font, read from the player's game files
+  (common/gamefont.h, nothing of the game shipped), e.g. Style=1 like the campaign timers; Anchor=1 next to the VP bar.
 - DLLs are stripped (-s): 25-82 KB instead of ~220-280 KB.
 - LobbyStats v0.7.5: own rating after the name in the main menu and the stats tooltip on hover over it (the game's own
   Arial Unicode MS, read from its files, in a frame like the game's tooltips); the stats host
