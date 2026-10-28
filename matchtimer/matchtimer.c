@@ -36,19 +36,19 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineOnly = 0;
-static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 21, g_onlineOnly = 0;
+static DWORD g_color = 0xFFFFF8F0, g_outline = 0xFF000000;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
-static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
+static int g_style = 1, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
 // Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre
 static int g_anchor = 0, g_vpX = 126;
 // opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
-static int g_outlineAlpha = 144;
+static int g_outlineAlpha = 160;
 // Demo=1: draw several looks and places at once (see draw_demo); the settings above are ignored then
 static int g_demo = 0;
-static char g_face[64] = "Arial";
+static char g_face[64] = "Caslon Antique New";
 // the game's own font, read from its files (gamefont.h); Font= naming it draws the digits with it
 #define GAME_FONT "Caslon Antique New"
 static char g_campFace[64] = GAME_FONT;            // Demo=1: font of the campaign style (CampaignFont=)
@@ -69,23 +69,23 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 20, 8, 200);
+    g_size       = ini_int(L"Size", 21, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"F0EEE4");
-    g_outline    = ini_color(L"Outline", L"");
-    g_style      = ini_int(L"Style", 2, 0, 2);
+    g_color      = ini_color(L"Color", L"FFF8F0");
+    g_outline    = ini_color(L"Outline", L"000000");
+    g_style      = ini_int(L"Style", 1, 0, 2);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
     g_anchor     = ini_int(L"Anchor", 0, 0, 1);
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
-    g_outlineAlpha = ini_int(L"OutlineAlpha", 144, 0, 255);
+    g_outlineAlpha = ini_int(L"OutlineAlpha", 160, 0, 255);
     g_demo       = ini_int(L"Demo", 0, 0, 1);
     g_gfWidth    = ini_int(L"GameFontWidth", 100, 50, 200);
     { wchar_t c[64]; GetPrivateProfileStringW(L"MatchTimer", L"CampaignFont", L"" GAME_FONT, c, 64, g_ini);
       WideCharToMultiByte(CP_ACP, 0, c, -1, g_campFace, sizeof g_campFace, NULL, NULL); }
-    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
+    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Caslon Antique New", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
 static void reload_ini(DWORD now) {
@@ -290,7 +290,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
 
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
-    int o = px >= 28 ? 2 : 1;
+    int o = game ? 1 : px >= 28 ? 2 : 1;                             // the game font: a thin outline, as on the campaign timers
     RECT r, box = {0}; DWORD fmt;
     if (g_style == 2) {                                              // box of the Menu button's height, next to it or to the VP bar
         char z[16]; int i;                                           // width from all-zero digits, so the box doesn't twitch
@@ -337,7 +337,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         }
         if (g_shadow) {                                              // soft drop shadow down-right, like the game's own HUD text
             RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, 0xB0000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
+            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, 0x80000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
         }
         if (game) gf_draw(&g_gf, g_sprite, t, &r, fmt, g_color); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
