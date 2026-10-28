@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <wchar.h>
@@ -48,10 +49,9 @@ static int g_outlineAlpha = 144;
 // Demo=1: draw several looks and places at once (see draw_demo); the settings above are ignored then
 static int g_demo = 0;
 static char g_face[64] = "Arial";
-// FontFile=: a .ttf next to the DLL (or a full path), registered for this process only (FR_PRIVATE), so Font= can name
-// a font that isn't installed in Windows, e.g. the game's own Caslon Antique New exported from master_fonts
-static wchar_t g_fontFile[MAX_PATH];
-static char g_campFace[64] = "Book Antiqua";      // Demo=1: font of the campaign style (CampaignFont=)
+// the game's own font, read from its files (gamefont.h); Font= naming it draws the digits with it
+#define GAME_FONT "Caslon Antique New"
+static char g_campFace[64] = GAME_FONT;            // Demo=1: font of the campaign style (CampaignFont=)
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
     wchar_t s[16]; GetPrivateProfileStringW(L"MatchTimer", key, def, s, 16, g_ini);
@@ -81,23 +81,10 @@ static void load_ini(void) {
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 144, 0, 255);
     g_demo       = ini_int(L"Demo", 0, 0, 1);
-    GetPrivateProfileStringW(L"MatchTimer", L"FontFile", L"", g_fontFile, MAX_PATH, g_ini);
-    { wchar_t c[64]; GetPrivateProfileStringW(L"MatchTimer", L"CampaignFont", L"Book Antiqua", c, 64, g_ini);
+    { wchar_t c[64]; GetPrivateProfileStringW(L"MatchTimer", L"CampaignFont", L"" GAME_FONT, c, 64, g_ini);
       WideCharToMultiByte(CP_ACP, 0, c, -1, g_campFace, sizeof g_campFace, NULL, NULL); }
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
-}
-// register FontFile= for this process (once per file name; a font stays registered until the game exits)
-static void load_font_file(void) {
-    static wchar_t done[MAX_PATH];
-    if (!g_fontFile[0] || !wcscmp(done, g_fontFile)) return;
-    wcscpy(done, g_fontFile);
-    wchar_t p[MAX_PATH];
-    if (g_fontFile[0] == L'\\' || (g_fontFile[0] && g_fontFile[1] == L':')) wcscpy(p, g_fontFile);
-    else { wcscpy(p, g_ini); wchar_t *sl = wcsrchr(p, L'\\'); if (sl) sl[1] = 0; else p[0] = 0; wcsncat(p, g_fontFile, MAX_PATH - wcslen(p) - 1); }
-    int n = AddFontResourceExW(p, FR_PRIVATE, NULL);
-    char a[MAX_PATH]; WideCharToMultiByte(CP_ACP, 0, p, -1, a, sizeof a, NULL, NULL);
-    logmsg("FontFile %s: %s", a, n ? "loaded" : "NOT loaded (missing or not a font file)");
 }
 static void reload_ini(DWORD now) {
     static DWORD last;
@@ -105,7 +92,7 @@ static void reload_ini(DWORD now) {
     last = now;
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (!GetFileAttributesExW(g_ini, GetFileExInfoStandard, &a) || !CompareFileTime(&a.ftLastWriteTime, &g_iniTime)) return;
-    load_ini(); load_font_file();
+    load_ini();
     logmsg("MatchTimer.ini re-read: Enabled=%d Style=%d Font=%s Size=%d MenuX=%d MenuY=%d X=%d Y=%d Align=%d OnlineOnly=%d", g_enabled,
            g_style, g_face, g_size, g_menuX, g_menuY, g_x, g_y, g_align, g_onlineOnly);
 }
@@ -201,6 +188,7 @@ typedef HRESULT (WINAPI *D3DXCreateSprite_t)(IDirect3DDevice9 *, ID3DXSprite **o
 static D3DXCreateFontA_t p_D3DXCreateFontA;
 static D3DXCreateSprite_t p_D3DXCreateSprite;
 #define D3DXSPRITE_ALPHABLEND   0x10
+#include "gamefont.h"
 
 // ---------- drawing (render thread) ----------
 typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
@@ -214,7 +202,8 @@ static volatile LONG g_totalCalls; static LONG g_calls, g_bbCalls;   // EndScene
 static int ensure_font(IDirect3DDevice9 *dev, int px) {
     static char face[64]; static int weight;
     // Style 0 keeps the old look: bold Arial
-    const char *want = g_style ? g_face : "Arial"; int w = g_style && !g_bold ? FW_NORMAL : FW_BOLD;
+    const char *want = !g_style ? "Arial" : !strcmp(g_face, GAME_FONT) ? "Book Antiqua" : g_face;   // the game font's fallback
+    int w = g_style && !g_bold ? FW_NORMAL : FW_BOLD;
     if (g_fontDev == dev && g_fontPx == px && weight == w && !strcmp(face, want))
         return g_font && g_sprite;                                       // made already (or failed: no retry every frame)
     if (g_font) { g_font->lpVtbl->Release(g_font); g_font = NULL; }
@@ -293,6 +282,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     g_bbCalls++;
     int px = g_size * H / 1080; if (px < 10) px = 10;               // Size is for 1080p, scaled with the screen height
     if (g_lost || !ensure_font(dev, px)) return;
+    int game = g_style && !strcmp(g_face, GAME_FONT) && gf_ready(dev, px);   // the game's own digits (gamefont.h)
     DWORD s = g_play / 1000; char t[16];
 
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
@@ -304,7 +294,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
         z[i] = 0;
         RECT m = {0, 0, 0, 0};
-        g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
+        if (game) m.right = gf_width(z); else g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
         int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad;
         int top = g_menuY * H / 1000 - bh / 2;
         if (g_anchor) {                                              // right of the victory points bar (centred on the screen)
@@ -340,13 +330,13 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
         for (int i = 0; (g_outline >> 24) && i < 8; i++) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
-            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
+            if (game) gf_draw(g_sprite, t, &q, fmt, halo); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
         }
         if (g_shadow) {                                              // soft drop shadow down-right, like the game's own HUD text
             RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
+            if (game) gf_draw(g_sprite, t, &q, fmt, 0xB0000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
         }
-        g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
+        if (game) gf_draw(g_sprite, t, &r, fmt, g_color); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
@@ -364,15 +354,16 @@ static ID3DXFont *demo_font(IDirect3DDevice9 *dev, int i, const char *face, int 
                                  ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face, &g_dfont[i]))) g_dfont[i] = NULL;
     return g_dfont[i];
 }
+// f = NULL: the game's own font (gamefont.h)
 static void demo_text(ID3DXFont *f, const char *t, RECT r, DWORD fmt, DWORD color, DWORD outline, int o) {
     static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
     for (int i = 0; (outline >> 24) && i < 8; i++) {
         RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
-        f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline);
+        if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline); else gf_draw(g_sprite, t, &q, fmt, outline);
     }
     RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-    f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0xB0000000);       // drop shadow
-    f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color);
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0xB0000000); else gf_draw(g_sprite, t, &q, fmt, 0xB0000000);   // drop shadow
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color); else gf_draw(g_sprite, t, &r, fmt, color);
 }
 static void draw_demo(IDirect3DDevice9 *dev) {
     int W, H;
@@ -380,8 +371,9 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     g_bbCalls++;
     int pxBox = 20 * H / 1080, pxCamp = 22 * H / 1080;
     if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
-    ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = demo_font(dev, 1, g_campFace, pxCamp);
-    if (!fb || !fc) return;
+    int game = !strcmp(g_campFace, GAME_FONT) && gf_ready(dev, pxCamp);    // the game's font, else Book Antiqua
+    ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = game ? NULL : demo_font(dev, 1, !strcmp(g_campFace, GAME_FONT) ? "Book Antiqua" : g_campFace, pxCamp);
+    if (!fb || (!fc && !game)) return;
     DWORD s = g_play / 1000; char t[16], z[16]; int i;
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
@@ -496,7 +488,7 @@ static int install_d3d_hooks(void) {
 }
 
 static DWORD WINAPI worker(LPVOID _) {
-    load_font_file();
+    gf_load(GAME_FONT);                                              // from the game's files; on failure Book Antiqua
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
     for (int i = 0; vers[i]; i++) {
         HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
