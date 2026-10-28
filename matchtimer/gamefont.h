@@ -376,7 +376,7 @@ __declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cm
         x += w;
     }
     for (int i = 0; i < tw * cell; i++) grey[i] = rgba[i * 4 + 3];
-    wcscpy(out, g_ini); wchar_t *sl = wcsrchr(out, L'\'); if (sl) sl[1] = 0; else out[0] = 0;
+    wcscpy(out, g_ini); wchar_t *sl = wcsrchr(out, L'\\'); if (sl) sl[1] = 0; else out[0] = 0;
     wcscat(out, L"gamefont_test.pgm");
     FILE *f = _wfopen(out, L"wb");
     if (f) { fprintf(f, "P5 %d %d 255\n", tw, cell); fwrite(grey, 1, tw * cell, f); fclose(f); }
