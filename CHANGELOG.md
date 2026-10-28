@@ -4,6 +4,10 @@ Every version gets an entry here before it reaches `main`. CI then tags `vX.Y.Z`
 version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entries since the previous `X.Y.0`.
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
+## 0.1.2 — 2026-10-28
+- LobbyStats v0.7.2: own rating after the name in the main menu; the stats host is baked in by default, so CI builds
+  show numbers again; `[Debug] LogInvoke=1` logs the Flash calls of the UI.
+
 ## 0.1.1 — 2026-10-28
 - MatchTimer v1: match clock (MM:SS of game time, pauses not counted) in a box next to the Menu button, experimental.
 
