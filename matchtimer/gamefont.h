@@ -128,7 +128,7 @@ static int inflate_raw(const BYTE *in, size_t inlen, BYTE *out, size_t outlen) {
 // ---------- SGA: one file out of an archive ----------
 static BYTE *sga_read(const wchar_t *path, const char *want, DWORD *size) {
     HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE) return NULL;
+    if (f == INVALID_HANDLE_VALUE) { char a[MAX_PATH]; WideCharToMultiByte(CP_ACP, 0, path, -1, a, sizeof a, NULL, NULL); logmsg("game font: can't open %s (%lu)", a, GetLastError()); return NULL; }
     BYTE h[184], *toc = NULL, *packed = NULL, *out = NULL; DWORD got;
     LARGE_INTEGER at;
     if (!ReadFile(f, h, sizeof h, &got, NULL) || got != sizeof h || memcmp(h, "_ARCHIVE", 8) || *(DWORD *)(h + 8) != 5) { logmsg("game font: not an SGA v5 archive"); goto done; }
