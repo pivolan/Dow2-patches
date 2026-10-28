@@ -1,7 +1,8 @@
 MatchTimer.dll v1 - match clock (MM:SS) in Dawn of War II: Retribution 3.19 (Elite). Experimental, tested offline vs AI.
 
 Shows how long the match has been going, in game time: 12:34, after an hour 1:02:34, next to the Menu button in the
-top right corner (Style=0 in the ini: anywhere on the screen). It starts when the match
+top right corner, in a box drawn like the game's own (Style=1 in the ini: text only, Style=0: anywhere on the
+screen). It starts when the match
 starts (after the loading screen) and stands still while the game does (pause, an offline game minimized, "waiting
 for players"), so everyone in the match and the replay see the same time. In every game: multiplayer, offline vs AI,
 replays (OnlineOnly=1 in the ini keeps it to live multiplayer). Never in menus, on the loading or post-game

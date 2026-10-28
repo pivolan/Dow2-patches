@@ -49,11 +49,6 @@ matchtimer/
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 
-simprobe/
-    Diagnostics: counts every call DOW2.exe makes into the game's own DLLs (SimEngine, Shark, ...) and logs
-    calls per second, plus which functions start and stop being called. Used to find a real per-tick call:
-    World::SimulatePre through the import table comes only once per match.
-
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
 

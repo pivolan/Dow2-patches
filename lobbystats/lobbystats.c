@@ -269,86 +269,7 @@ static void decorate(GFxValue *args, unsigned count) {
     if (want) SetEvent(g_wake);
 }
 
-// ---------- UI probe ([Debug] LogInvoke=1): which Flash functions the game calls, with what arguments ----------
-// LobbyStats_invoke.log gets the first 3 calls of every method with all arguments (as the game sent them, before
-// decorate), and once a minute how many times each method was called. Used to find the loading-screen and HUD
-// functions. "movie" is the engine object Invoke is called on: one per Flash screen.
-typedef struct { char name[64]; void *movie; LONG calls, lastCalls; int otherMovie; } ProbeEntry;
-#define PROBE_SLOTS 1024
-static int g_probe;
-static wchar_t g_probeLog[MAX_PATH];
-static CRITICAL_SECTION g_probeLock;
-static ProbeEntry g_probeTab[PROBE_SLOTS]; static int g_probeN;
-static DWORD g_probeLast;
-
-static FILE *probe_open(void) {
-    FILE *f = _wfopen(g_probeLog, L"a"); if (!f) return NULL;
-    SYSTEMTIME t; GetLocalTime(&t); fprintf(f, "%02d:%02d:%02d ", t.wHour, t.wMinute, t.wSecond);
-    return f;
-}
-static void probe_args(FILE *f, GFxValue *args, unsigned count) {
-    for (unsigned i = 0; i < count && i < 400; i++) {
-        GFxValue *a = &args[i];
-        fprintf(f, "    [%u] ", i);
-        if (a->type == GFX_BOOL) fprintf(f, "bool %d\n", a->v.b);
-        else if (a->type == GFX_NUMBER) fprintf(f, "num %g\n", a->v.num);
-        else if (a->type == GFX_STRING) fprintf(f, "str \"%.150s\"\n", a->v.s && !IsBadReadPtr(a->v.s, 1) ? a->v.s : "?");
-        else if (a->type == GFX_WSTRING) {
-            char u[512] = "?"; int n = 0;
-            if (a->v.ws && !IsBadReadPtr(a->v.ws, 2)) {
-                while (n < 150 && a->v.ws[n]) n++;
-                int k = WideCharToMultiByte(CP_UTF8, 0, a->v.ws, n, u, sizeof u - 1, NULL, NULL); u[k > 0 ? k : 0] = 0;
-            }
-            fprintf(f, "wstr \"%s\"\n", u);
-        } else fprintf(f, "type %d\n", a->type);
-    }
-    if (count > 400) fprintf(f, "    ... %u more\n", count - 400);
-}
-static void probe(void *movie, const char *method, GFxValue *args, unsigned count) {
-    if (IsBadReadPtr(method, 1)) return;
-    unsigned h = 2166136261u;
-    for (int i = 0; i < 63 && method[i]; i++) h = (h ^ (unsigned char)method[i]) * 16777619u;
-    EnterCriticalSection(&g_probeLock);
-    ProbeEntry *e = NULL;
-    for (unsigned i = 0; i < PROBE_SLOTS; i++) {
-        ProbeEntry *s = &g_probeTab[(h + i) % PROBE_SLOTS];
-        if (!s->name[0]) {
-            if (g_probeN < PROBE_SLOTS - 1) { strncpy(s->name, method, 63); s->movie = movie; g_probeN++; e = s; }
-            break;
-        }
-        if (!strncmp(s->name, method, 63)) { e = s; break; }
-    }
-    if (e && ++e->calls <= 3) {
-        FILE *f = probe_open();
-        if (f) {
-            DWORD vt = !IsBadReadPtr(movie, 4) ? *(DWORD *)movie : 0;
-            fprintf(f, "%s  movie=%p vtbl=%08lX  call #%ld, %u args\n", e->name, movie, vt, e->calls, count);
-            if (args && count && count < 4096 && !IsBadReadPtr(args, count * sizeof(GFxValue))) probe_args(f, args, count);
-            fclose(f);
-        }
-    } else if (e && movie != e->movie && !e->otherMovie) {
-        e->otherMovie = 1;
-        FILE *f = probe_open(); if (f) { fprintf(f, "%s  also called on movie=%p\n", e->name, movie); fclose(f); }
-    }
-    DWORD now = GetTickCount();
-    if (now - g_probeLast >= 60000) {
-        g_probeLast = now;
-        FILE *f = probe_open();
-        if (f) {
-            fprintf(f, "calls in the last minute:\n");
-            for (int i = 0; i < PROBE_SLOTS; i++) {
-                ProbeEntry *s = &g_probeTab[i];
-                if (s->name[0] && s->calls != s->lastCalls) fprintf(f, "  %7ld  %s\n", s->calls - s->lastCalls, s->name);
-                s->lastCalls = s->calls;
-            }
-            fclose(f);
-        }
-    }
-    LeaveCriticalSection(&g_probeLock);
-}
-
 static char __fastcall hook(void *self, void *edx, const char *method, int flags, GFxValue *args, unsigned count) {
-    if (g_probe && method) probe(self, method, args, count);
     if (method && args && !strcmp(method, "Receive_PopulatePlayerList") && count < 4096 && !IsBadReadPtr(args, count * sizeof(GFxValue)))
         decorate(args, count);
     if (method && args && count >= 1 && !strcmp(method, "Receive_SetMaxPlayers") && !IsBadReadPtr(args, sizeof(GFxValue)) && args[0].type == GFX_NUMBER)
@@ -384,11 +305,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_stats       = GetPrivateProfileIntW(L"LobbyStats", L"Stats", 1, ini);
     GetPrivateProfileStringW(L"LobbyStats", L"Server", STATS_HOST, g_server, 128, ini);
     if (!g_server[0]) { g_stats = 0; }                        // stats service not set - there will be no numbers
-    g_probe = GetPrivateProfileIntW(L"Debug", L"LogInvoke", 0, ini);
-    _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
-    InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
-    g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.1%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    InitializeCriticalSection(&g_lock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    logmsg("LobbyStats v0.7.0");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
