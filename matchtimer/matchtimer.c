@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <wchar.h>
@@ -35,13 +36,23 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineOnly = 0;
-static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 21, g_onlineOnly = 0;
+static DWORD g_color = 0xFFFFF8F0, g_outline = 0xFF000000;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
-static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
-static char g_face[64] = "Arial";
+static int g_style = 1, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
+// Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre
+static int g_anchor = 0, g_vpX = 126;
+// opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
+static int g_outlineAlpha = 160;
+// Demo=1: draw several looks and places at once (see draw_demo); the settings above are ignored then
+static int g_demo = 0;
+static char g_face[64] = "Caslon Antique New";
+// the game's own font, read from its files (gamefont.h); Font= naming it draws the digits with it
+#define GAME_FONT "Caslon Antique New"
+static char g_campFace[64] = GAME_FONT;            // Demo=1: font of the campaign style (CampaignFont=)
+static int g_gfWidth = 100;                        // GameFontWidth=: horizontal scale of the game font's digits, percent
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
     wchar_t s[16]; GetPrivateProfileStringW(L"MatchTimer", key, def, s, 16, g_ini);
@@ -58,16 +69,23 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 20, 8, 200);
+    g_size       = ini_int(L"Size", 21, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"F0EEE4");
-    g_outline    = ini_color(L"Outline", L"");
-    g_style      = ini_int(L"Style", 2, 0, 2);
+    g_color      = ini_color(L"Color", L"FFF8F0");
+    g_outline    = ini_color(L"Outline", L"000000");
+    g_style      = ini_int(L"Style", 1, 0, 2);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
-    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
+    g_anchor     = ini_int(L"Anchor", 0, 0, 1);
+    g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
+    g_outlineAlpha = ini_int(L"OutlineAlpha", 160, 0, 255);
+    g_demo       = ini_int(L"Demo", 0, 0, 1);
+    g_gfWidth    = ini_int(L"GameFontWidth", 100, 50, 200);
+    { wchar_t c[64]; GetPrivateProfileStringW(L"MatchTimer", L"CampaignFont", L"" GAME_FONT, c, 64, g_ini);
+      WideCharToMultiByte(CP_ACP, 0, c, -1, g_campFace, sizeof g_campFace, NULL, NULL); }
+    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Caslon Antique New", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
 static void reload_ini(DWORD now) {
@@ -172,6 +190,8 @@ typedef HRESULT (WINAPI *D3DXCreateSprite_t)(IDirect3DDevice9 *, ID3DXSprite **o
 static D3DXCreateFontA_t p_D3DXCreateFontA;
 static D3DXCreateSprite_t p_D3DXCreateSprite;
 #define D3DXSPRITE_ALPHABLEND   0x10
+#include "../common/gamefont.h"
+static GameFont g_gf = { "0123456789:" };                     // the clock's digits in the game's Caslon Antique New
 
 // ---------- drawing (render thread) ----------
 typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
@@ -185,7 +205,8 @@ static volatile LONG g_totalCalls; static LONG g_calls, g_bbCalls;   // EndScene
 static int ensure_font(IDirect3DDevice9 *dev, int px) {
     static char face[64]; static int weight;
     // Style 0 keeps the old look: bold Arial
-    const char *want = g_style ? g_face : "Arial"; int w = g_style && !g_bold ? FW_NORMAL : FW_BOLD;
+    const char *want = !g_style ? "Arial" : !strcmp(g_face, GAME_FONT) ? "Book Antiqua" : g_face;   // the game font's fallback
+    int w = g_style && !g_bold ? FW_NORMAL : FW_BOLD;
     if (g_fontDev == dev && g_fontPx == px && weight == w && !strcmp(face, want))
         return g_font && g_sprite;                                       // made already (or failed: no retry every frame)
     if (g_font) { g_font->lpVtbl->Release(g_font); g_font = NULL; }
@@ -264,28 +285,36 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     g_bbCalls++;
     int px = g_size * H / 1080; if (px < 10) px = 10;               // Size is for 1080p, scaled with the screen height
     if (g_lost || !ensure_font(dev, px)) return;
+    int game = g_style && !strcmp(g_face, GAME_FONT) && (g_gf.width = g_gfWidth, gf_ready(&g_gf, dev, px));   // the game's own digits (gamefont.h)
     DWORD s = g_play / 1000; char t[16];
 
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
-    int o = px >= 28 ? 2 : 1;
+    int o = game ? 1 : px >= 28 ? 2 : 1;                             // the game font: a thin outline, as on the campaign timers
     RECT r, box = {0}; DWORD fmt;
-    if (g_style == 2) {                                              // box of the Menu button's height, right edge next to it
+    if (g_style == 2) {                                              // box of the Menu button's height, next to it or to the VP bar
         char z[16]; int i;                                           // width from all-zero digits, so the box doesn't twitch
         for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
         z[i] = 0;
         RECT m = {0, 0, 0, 0};
-        g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
+        if (game) m.right = gf_width(&g_gf, z); else g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
         int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad;
-        int right = W - g_menuX * H / 1000, top = g_menuY * H / 1000 - bh / 2;
-        SetRect(&box, right - bw, top, right, top + bh);
+        int top = g_menuY * H / 1000 - bh / 2;
+        if (g_anchor) {                                              // right of the victory points bar (centred on the screen)
+            int left = W / 2 + g_vpX * H / 1000;
+            SetRect(&box, left, top, left + bw, top + bh);
+        } else {
+            int right = W - g_menuX * H / 1000;
+            SetRect(&box, right - bw, top, right, top + bh);
+        }
         r = box;
         fmt = DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER;
         if (!ensure_box(dev, bw, bh)) box.right = box.left;          // no texture: text only
-    } else if (g_style) {                                            // right edge next to the Menu button, centred on it
-        int right = W - g_menuX * H / 1000, cy = g_menuY * H / 1000;
-        SetRect(&r, right - W, cy - px, right, cy + px);
-        fmt = DT_SINGLELINE | DT_NOCLIP | DT_RIGHT | DT_VCENTER;
+    } else if (g_style) {                                            // text only, next to the Menu button or the VP bar
+        int cy = g_menuY * H / 1000;
+        if (g_anchor) { int left = W / 2 + g_vpX * H / 1000; SetRect(&r, left, cy - px, left + W, cy + px); }
+        else { int right = W - g_menuX * H / 1000; SetRect(&r, right - W, cy - px, right, cy + px); }
+        fmt = DT_SINGLELINE | DT_NOCLIP | (g_anchor ? DT_LEFT : DT_RIGHT) | DT_VCENTER;
     } else {
         int x = W * g_x / 100, y = H * g_y / 100;
         SetRect(&r, g_align == 0 ? x : x - W, y, g_align == 2 ? x : x + W, y + 2 * px);
@@ -299,22 +328,99 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
             float pos[3] = { (float)box.left, (float)box.top, 0.0f };
             g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF);
         }
-        // optional outline (Outline= empty: none); Style=1 makes it a half-transparent halo
-        DWORD halo = g_style ? (g_outline & 0xFFFFFF) | 0x90000000 : g_outline;
+        // optional outline (Outline= empty: none); in Style=1/2 OutlineAlpha sets how solid it is
+        DWORD halo = g_style ? (g_outline & 0xFFFFFF) | (DWORD)g_outlineAlpha << 24 : g_outline;
         static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
         for (int i = 0; (g_outline >> 24) && i < 8; i++) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
-            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
+            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, halo); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
         }
         if (g_shadow) {                                              // soft drop shadow down-right, like the game's own HUD text
             RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
+            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, 0x80000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
         }
-        g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
+        if (game) gf_draw(&g_gf, g_sprite, t, &r, fmt, g_color); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
+// ---------- Demo=1: several looks and places at once, to compare them in one match ----------
+// "box" = Style=2 (replay-panel box, Arial); "campaign" = white serif digits with a crisp black outline, no box, like
+// the campaign objective timers. Pairs: next to the Menu button (box, campaign left of it) and above the minimap
+// (box, campaign right of it), and right of the VP bar box, game font, Book Antiqua to compare the fonts. The minimap
+// frame starts 221/1000 H above the bottom edge (2560x1440).
+static ID3DXFont *g_dfont[3]; static IDirect3DDevice9 *g_ddev[3]; static int g_dpx[3]; static char g_dface[3][64];
+static ID3DXFont *demo_font(IDirect3DDevice9 *dev, int i, const char *face, int px) {
+    if (g_ddev[i] == dev && g_dpx[i] == px && !strcmp(g_dface[i], face)) return g_dfont[i];
+    if (g_dfont[i]) { g_dfont[i]->lpVtbl->Release(g_dfont[i]); g_dfont[i] = NULL; }
+    g_ddev[i] = dev; g_dpx[i] = px; lstrcpynA(g_dface[i], face, 64);
+    if (FAILED(p_D3DXCreateFontA(dev, px, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                 ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face, &g_dfont[i]))) g_dfont[i] = NULL;
+    return g_dfont[i];
+}
+// f = NULL: the game's own font (gamefont.h)
+static void demo_text(ID3DXFont *f, const char *t, RECT r, DWORD fmt, DWORD color, DWORD outline, int o) {
+    static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    for (int i = 0; (outline >> 24) && i < 8; i++) {
+        RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
+        if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline); else gf_draw(&g_gf, g_sprite, t, &q, fmt, outline);
+    }
+    RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0x80000000); else gf_draw(&g_gf, g_sprite, t, &q, fmt, 0x80000000);   // drop shadow
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color); else gf_draw(&g_gf, g_sprite, t, &r, fmt, color);
+}
+static void draw_demo(IDirect3DDevice9 *dev) {
+    int W, H;
+    if (!on_back_buffer(dev, &W, &H)) return;
+    g_bbCalls++;
+    int pxBox = 18 * H / 1080, pxCamp = 21 * H / 1080;
+    if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
+    int game = !strcmp(g_campFace, GAME_FONT) && (g_gf.width = g_gfWidth, gf_ready(&g_gf, dev, pxCamp));    // the game's font, else Book Antiqua
+    ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = game ? NULL : demo_font(dev, 1, !strcmp(g_campFace, GAME_FONT) ? "Book Antiqua" : g_campFace, pxCamp);
+    if (!fb || (!fc && !game)) return;
+    DWORD s = g_play / 1000; char t[16], z[16]; int i;
+    if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
+    else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
+    for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
+    z[i] = 0;
+    RECT m = {0, 0, 0, 0};
+    fb->lpVtbl->DrawTextA(fb, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
+    int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad, gap = 10 * H / 1000;
+    if (!ensure_box(dev, bw, bh)) return;
+    int oc = 1, ob = pxBox >= 28 ? 2 : 1;                              // a thin outline, as on the campaign timers
+    RECT box[3], camp[2], ba;
+    int top = 18 * H / 1000 - bh / 2, right = W - g_menuX * H / 1000;     // next to the Menu button
+    SetRect(&box[0], right - bw, top, right, top + bh);
+    SetRect(&camp[0], box[0].left - gap - W, top, box[0].left - gap, top + bh);
+    int cy = H - 239 * H / 1000, left = 7 * H / 1000;                    // above the minimap
+    SetRect(&box[1], left, cy - bh / 2, left + bw, cy - bh / 2 + bh);
+    SetRect(&camp[1], box[1].right + gap, box[1].top, box[1].right + gap + W, box[1].bottom);
+    // right of the VP bar, to compare the fonts side by side: box (Arial), the game's Caslon, Book Antiqua
+    left = W / 2 + g_vpX * H / 1000;
+    SetRect(&box[2], left, top, left + bw, top + bh);
+    RECT gc = { box[2].right + gap, top, box[2].right + gap + W, top + bh };
+    int gw = game ? gf_width(&g_gf, t) : 0;
+    if (!game && fc) { RECT q = {0, 0, 0, 0}; fc->lpVtbl->DrawTextA(fc, NULL, t, -1, &q, DT_SINGLELINE | DT_CALCRECT, 0); gw = q.right; }
+    ID3DXFont *fa = demo_font(dev, 2, "Book Antiqua", pxCamp);
+    SetRect(&ba, gc.left + gw + 2 * gap, top, gc.left + gw + 2 * gap + W, top + bh);
+    D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
+    int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
+    IDirect3DDevice9_SetViewport(dev, &full);
+    if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: boxes first, then the text
+        for (int k = 0; k < 3; k++) {
+            float pos[3] = { (float)box[k].left, (float)box[k].top, 0.0f };
+            g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF);
+        }
+        for (int k = 0; k < 3; k++) demo_text(fb, t, box[k], DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER, 0xFFF0EEE4, 0, ob);
+        for (int k = 0; k < 2; k++)
+            demo_text(fc, t, camp[k], DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | (k ? DT_LEFT : DT_RIGHT), 0xFFFFF8F0, 0xA0000000, oc);
+        demo_text(fc, t, gc, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xA0000000, oc);
+        if (fa) demo_text(fa, t, ba, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xA0000000, oc);
+        g_sprite->lpVtbl->End(g_sprite);
+    }
+    if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
+}
+
 static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
     InterlockedIncrement(&g_totalCalls); g_calls++;
@@ -328,7 +434,7 @@ static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
                     run / 60000, run / 1000 % 60, g_ticks, run ? g_ticks * 1000.0 / run : 0.0);
     }
     if (vis) {
-        draw(dev, now);
+        if (g_demo) draw_demo(dev); else draw(dev, now);
         if (!g_diagDone && now - g_shownAt > 10000) {
             g_diagDone = 1;
             logmsg("EndScene in 10 s: %ld calls, %ld into the back buffer%s", g_calls, g_bbCalls,
@@ -342,12 +448,14 @@ static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
     if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
         if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
+        for (int i = 0; i < 3; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnLostDevice(g_dfont[i]);
         g_lost = 1;
     }
     HRESULT hr = o_Reset(dev, pp);
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
+        for (int i = 0; i < 3; i++) if (g_dfont[i]) g_dfont[i]->lpVtbl->OnResetDevice(g_dfont[i]);
         g_lost = 0;
     }
     logmsg("device Reset -> hr=0x%08lx", (unsigned long)hr);
@@ -393,6 +501,7 @@ static int install_d3d_hooks(void) {
 }
 
 static DWORD WINAPI worker(LPVOID _) {
+    gf_load(&g_gf, GAME_FONT, NULL);                                            // from the game's files; on failure Book Antiqua
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
     for (int i = 0; vers[i]; i++) {
         HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
@@ -439,4 +548,31 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     if (!g_enabled) { logmsg("disabled in MatchTimer.ini"); return TRUE; }
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     return TRUE;
+}
+
+// rundll32 MatchTimer.dll,GameFontTest <game folder>: reads the game font as in the game and writes gamefont_test.pgm
+// (the digits at 48 px) next to the DLL, to check it outside the game
+__declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cmd, int show) {
+    wchar_t dir[MAX_PATH], out[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, cmd, -1, dir, MAX_PATH);
+    for (size_t n = wcslen(dir); n && dir[n - 1] == L' '; ) dir[--n] = 0;          // rundll32 adds a trailing space
+    static GameFont gf = { "0123456789:" };
+    if (!gf_load(&gf, GAME_FONT, dir)) return;
+    float s = 48 / (gf.ascent + gf.descent);
+    int n = (int)strlen(gf.chars), cell = 48 + 2 * GF_M, tw = 0, x = 0;
+    for (int c = 0; c < n; c++) tw += (int)(gf.adv[c] * s + 0.5f) + 2 * GF_M;
+    BYTE *rgba = calloc(tw * cell, 4), *grey = malloc(tw * cell);
+    if (!rgba || !grey) return;
+    for (int c = 0; c < n; c++) {
+        int w = (int)(gf.adv[c] * s + 0.5f) + 2 * GF_M;
+        gf_raster(gf.seg[c], gf.nseg[c], s, s, (float)GF_M, GF_M + gf.ascent * s, w, cell, rgba + x * 4, tw * 4);
+        x += w;
+    }
+    for (int i = 0; i < tw * cell; i++) grey[i] = rgba[i * 4 + 3];
+    wcscpy(out, g_ini); wchar_t *sl = wcsrchr(out, L'\\'); if (sl) sl[1] = 0; else out[0] = 0;
+    wcscat(out, L"gamefont_test.pgm");
+    FILE *f = _wfopen(out, L"wb");
+    if (f) { fprintf(f, "P5 %d %d 255\n", tw, cell); fwrite(grey, 1, tw * cell, f); fclose(f); }
+    logmsg("GameFontTest: %d x %d written", tw, cell);
+    free(rgba); free(grey);
 }
