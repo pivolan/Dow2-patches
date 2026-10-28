@@ -5,7 +5,8 @@ version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entri
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
 ## 0.1.2 — 2026-10-28
-- LobbyStats v0.7.2: own rating after the name in the main menu; the stats host is baked in by default, so CI builds
+- LobbyStats v0.7.3: own rating after the name in the main menu and the stats tooltip on hover over it; the stats host
+  is baked in by default, so CI builds
   show numbers again; `[Debug] LogInvoke=1` logs the Flash calls of the UI.
 
 ## 0.1.1 — 2026-10-28
