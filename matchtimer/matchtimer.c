@@ -35,12 +35,11 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 22, g_onlineOnly = 0;
-static DWORD g_color = 0xFFFFFFFF, g_outline = 0xFF000000;
-// Style=1: a panel docked to the right of the victory points bar. The bar sits at the top centre and scales with
-// the screen height, so the panel is placed from the screen centre in 1/1000 of the screen height.
-static int g_style = 1, g_bold = 0, g_panelX = 119, g_panelY = 0, g_panelW = 75, g_panelH = 34;
-static DWORD g_panel = 0xFF12171B, g_border = 0xFF5A8797;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 16, g_onlineOnly = 0;
+static DWORD g_color = 0xFFC8D2D4, g_outline = 0xFF000000;
+// Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
+// (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
+static int g_style = 1, g_bold = 0, g_menuX = 131, g_menuY = 17;
 static char g_face[64] = "Book Antiqua";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
@@ -58,18 +57,14 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 22, 8, 200);
+    g_size       = ini_int(L"Size", 16, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"FFFFFF");
+    g_color      = ini_color(L"Color", L"C8D2D4");
     g_outline    = ini_color(L"Outline", L"000000");
     g_style      = ini_int(L"Style", 1, 0, 1);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
-    g_panelX     = ini_int(L"PanelX", 119, -1000, 1000);
-    g_panelY     = ini_int(L"PanelY", 0, 0, 1000);
-    g_panelW     = ini_int(L"PanelW", 75, 10, 500);
-    g_panelH     = ini_int(L"PanelH", 34, 10, 200);
-    g_panel      = ini_color(L"Panel", L"12171B");
-    g_border     = ini_color(L"Border", L"5A8797");
+    g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
+    g_menuY      = ini_int(L"MenuY", 17, 0, 1000);
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Book Antiqua", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
@@ -80,8 +75,8 @@ static void reload_ini(DWORD now) {
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (!GetFileAttributesExW(g_ini, GetFileExInfoStandard, &a) || !CompareFileTime(&a.ftLastWriteTime, &g_iniTime)) return;
     load_ini();
-    logmsg("MatchTimer.ini re-read: Enabled=%d Style=%d Font=%s Size=%d Panel %d,%d %dx%d X=%d Y=%d Align=%d OnlineOnly=%d", g_enabled, g_style,
-           g_face, g_size, g_panelX, g_panelY, g_panelW, g_panelH, g_x, g_y, g_align, g_onlineOnly);
+    logmsg("MatchTimer.ini re-read: Enabled=%d Style=%d Font=%s Size=%d MenuX=%d MenuY=%d X=%d Y=%d Align=%d OnlineOnly=%d", g_enabled,
+           g_style, g_face, g_size, g_menuX, g_menuY, g_x, g_y, g_align, g_onlineOnly);
 }
 
 // ---------- match clock: sim ticks (sim thread) ----------
@@ -226,13 +221,10 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
     int o = px >= 28 ? 2 : 1;
     RECT r; DWORD fmt;
-    if (g_style) {                                                   // panel next to the victory points bar
-        int ph = g_panelH * H / 1000, left = W / 2 + g_panelX * H / 1000, top = g_panelY * H / 1000;
-        RECT m = { 0, 0, 0, 0 };                                     // wide enough for 1:02:34 as well
-        g_font->lpVtbl->DrawTextA(g_font, NULL, t, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
-        int pw = g_panelW * H / 1000; if (pw < m.right + ph / 2) pw = m.right + ph / 2;
-        SetRect(&r, left, top, left + pw, top + ph);
-        fmt = DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER;
+    if (g_style) {                                                   // right edge next to the Menu button, centred on it
+        int right = W - g_menuX * H / 1000, cy = g_menuY * H / 1000;
+        SetRect(&r, right - W, cy - px, right, cy + px);
+        fmt = DT_SINGLELINE | DT_NOCLIP | DT_RIGHT | DT_VCENTER;
     } else {
         int x = W * g_x / 100, y = H * g_y / 100;
         SetRect(&r, g_align == 0 ? x : x - W, y, g_align == 2 ? x : x + W, y + 2 * px);
@@ -241,26 +233,13 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
     IDirect3DDevice9_SetViewport(dev, &full);                        // the game may have left a smaller viewport
-    DWORD scissor = FALSE;
-    IDirect3DDevice9_GetRenderState(dev, D3DRS_SCISSORTESTENABLE, &scissor);
-    if (g_style) {                                                   // frame and fill: Clear on rects, no extra render state
-        int b = H >= 1440 ? 2 : 1;
-        D3DRECT outer = { r.left, r.top, r.right, r.bottom }, inner = { r.left + b, r.top + b, r.right - b, r.bottom - b };
-        if (scissor) IDirect3DDevice9_SetRenderState(dev, D3DRS_SCISSORTESTENABLE, FALSE);
-        IDirect3DDevice9_Clear(dev, 1, &outer, D3DCLEAR_TARGET, g_border, 1.0f, 0);
-        IDirect3DDevice9_Clear(dev, 1, &inner, D3DCLEAR_TARGET, g_panel, 1.0f, 0);
-        if (scissor) IDirect3DDevice9_SetRenderState(dev, D3DRS_SCISSORTESTENABLE, TRUE);
-    }
     if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND | D3DXSPRITE_SORT_TEXTURE))) {
-        if (g_style) {                                               // on the panel a soft shadow is enough
-            RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, g_outline);
-        } else {
-            static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-            for (int i = 0; i < 8; i++) {                            // outline, so the clock reads on any terrain
-                RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
-                g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, g_outline);
-            }
+        // outline, so the clock reads on any terrain; Style=1 makes it a half-transparent halo, like the game's own text
+        DWORD halo = g_style ? (g_outline & 0xFFFFFF) | 0x90000000 : g_outline;
+        static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+        for (int i = 0; i < 8; i++) {
+            RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
+            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
         }
         g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
