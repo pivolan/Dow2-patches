@@ -39,7 +39,7 @@ static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineO
 static DWORD g_color = 0xFFC8D2D4, g_outline = 0;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
-static int g_style = 1, g_bold = 0, g_menuX = 131, g_menuY = 17;
+static int g_style = 1, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 17;
 static char g_face[64] = "Book Antiqua";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
@@ -63,6 +63,7 @@ static void load_ini(void) {
     g_outline    = ini_color(L"Outline", L"");
     g_style      = ini_int(L"Style", 1, 0, 1);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
+    g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
     g_menuY      = ini_int(L"MenuY", 17, 0, 1000);
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Book Antiqua", f, 64, g_ini);
@@ -240,6 +241,10 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         for (int i = 0; (g_outline >> 24) && i < 8; i++) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
             g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
+        }
+        if (g_shadow) {                                              // soft drop shadow down-right, like the game's own HUD text
+            RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
+            g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
         }
         g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
