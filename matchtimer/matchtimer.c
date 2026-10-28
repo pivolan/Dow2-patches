@@ -4,7 +4,8 @@
 // ("waiting for players") doesn't stop it. Shown in every game, offline vs AI and replays included; OnlineOnly=1
 // keeps it to live multiplayer (the session is online only there). Never in menus, on the loading screen or on
 // the post-game screen (no sim ticks there).
-// Sim ticks: World::SimulatePre is hooked through the DOW2.exe import table (the slot FrameProbe uses).
+// Sim ticks: World::Simulate is hooked through the DOW2.exe import table. Not World::SimulatePre / SimulatePost:
+// DOW2.exe calls those through the import table only once per match, at its start and its end (seen with SimProbe).
 // A new World object, or no tick for NewMatchGapSec, starts a new match. While loading, the game may run a few
 // ticks and then wait for the other players: a pause within the first EARLY_TICKS ticks restarts the clock.
 // Drawing: IDirect3DDevice9::EndScene through the device vtable + ID3DXFont, like CGNumbers (DXVK-safe);
@@ -19,7 +20,7 @@
 #define COBJMACROS
 #include <d3d9.h>
 
-#define IAT_SIM_PRE     0x00F88154   // World::SimulatePre (__thiscall, ecx = World), imported from SimEngine.dll
+#define IAT_SIM         0x00F885E4   // World::Simulate (__thiscall, ecx = World), imported from SimEngine.dll, every sim tick
 #define G_SESSION       0x01335678   // *(*G_SESSION + 4) & 0x558: the session is online (live MP), see docs/OBSERVER_LAG.md
 #define ONLINE_MASK     0x558
 #define EARLY_TICKS     16           // ~2 s of simulation: a pause before that is the loading screen, not a lag
@@ -70,7 +71,7 @@ static void reload_ini(DWORD now) {
 
 // ---------- match clock: sim ticks (sim thread) ----------
 typedef void (__fastcall *ThisFn)(void *, void *);
-static ThisFn o_pre;
+static ThisFn o_sim;
 static void *volatile g_world;                  // World of the current match
 static volatile DWORD g_start, g_lastTick;      // GetTickCount() at the match start and at the last sim tick
 static volatile LONG g_ticks;                   // sim ticks since g_start
@@ -80,7 +81,7 @@ static DWORD session_flags(void) {
     if (IsBadReadPtr(g, 4) || !*g || IsBadReadPtr((void *)(*g + 4), 4)) return 0;
     return *(DWORD *)(*g + 4);
 }
-static void __fastcall hk_pre(void *self, void *edx) {
+static void __fastcall hk_sim(void *self, void *edx) {
     DWORD now = GetTickCount(), gap = now - g_lastTick;
     if (self != g_world || !g_lastTick || gap > g_newMatchMs) {
         logmsg("match start: World %p (previous %p, last tick %lu s ago), session flags %lX",
@@ -92,7 +93,7 @@ static void __fastcall hk_pre(void *self, void *edx) {
     } else if (gap > 3000)
         logmsg("sim stood still for %lu s (lag?), the clock kept running", gap / 1000);
     g_lastTick = now; g_ticks++;
-    o_pre(self, edx);
+    o_sim(self, edx);
 }
 static int clock_visible(DWORD now) {
     if (!g_lastTick || g_ticks < EARLY_TICKS) return 0;            // no match yet, or still on the loading screen
@@ -302,7 +303,7 @@ static DWORD WINAPI worker(LPVOID _) {
     if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("no d3dx9_*.dll with D3DXCreateFontA - the clock can't be drawn"); return 0; }
     int sim = 0;
     for (int i = 0; i < 120; i++) {
-        if (!sim && (sim = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre))) logmsg("sim tick hook installed");
+        if (!sim && (sim = iat_hook(IAT_SIM, "SimEngine.dll", hk_sim, (void **)&o_sim))) logmsg("sim tick hook installed");
         if (sim && GetModuleHandleA("d3d9.dll") && install_d3d_hooks()) {
             logmsg("hooks installed after %d s", i);
             Sleep(60000);                                            // menus draw every frame too, so EndScene must have run by now
@@ -312,7 +313,7 @@ static DWORD WINAPI worker(LPVOID _) {
         Sleep(1000);
     }
     if (sim) logmsg("gave up waiting for d3d9.dll");
-    else logmsg("World::SimulatePre import not found at %08X - not DOW2.exe 3.19? The clock stays off", IAT_SIM_PRE);
+    else logmsg("World::Simulate import not found at %08X - not DOW2.exe 3.19? The clock stays off", IAT_SIM);
     return 0;
 }
 
