@@ -48,6 +48,10 @@ static int g_outlineAlpha = 144;
 // Demo=1: draw several looks and places at once (see draw_demo); the settings above are ignored then
 static int g_demo = 0;
 static char g_face[64] = "Arial";
+// FontFile=: a .ttf next to the DLL (or a full path), registered for this process only (FR_PRIVATE), so Font= can name
+// a font that isn't installed in Windows, e.g. the game's own Caslon Antique New exported from master_fonts
+static wchar_t g_fontFile[MAX_PATH]; static int g_fontFileDone;
+static char g_campFace[64] = "Book Antiqua";      // Demo=1: font of the campaign style (CampaignFont=)
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
     wchar_t s[16]; GetPrivateProfileStringW(L"MatchTimer", key, def, s, 16, g_ini);
@@ -77,8 +81,23 @@ static void load_ini(void) {
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 144, 0, 255);
     g_demo       = ini_int(L"Demo", 0, 0, 1);
+    GetPrivateProfileStringW(L"MatchTimer", L"FontFile", L"", g_fontFile, MAX_PATH, g_ini);
+    { wchar_t c[64]; GetPrivateProfileStringW(L"MatchTimer", L"CampaignFont", L"Book Antiqua", c, 64, g_ini);
+      WideCharToMultiByte(CP_ACP, 0, c, -1, g_campFace, sizeof g_campFace, NULL, NULL); }
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
+}
+// register FontFile= for this process (once per file name; a font stays registered until the game exits)
+static void load_font_file(void) {
+    static wchar_t done[MAX_PATH];
+    if (!g_fontFile[0] || !wcscmp(done, g_fontFile)) return;
+    wcscpy(done, g_fontFile);
+    wchar_t p[MAX_PATH];
+    if (g_fontFile[0] == L'\' || (g_fontFile[0] && g_fontFile[1] == L':')) wcscpy(p, g_fontFile);
+    else { wcscpy(p, g_ini); wchar_t *sl = wcsrchr(p, L'\'); if (sl) sl[1] = 0; else p[0] = 0; wcsncat(p, g_fontFile, MAX_PATH - wcslen(p) - 1); }
+    int n = AddFontResourceExW(p, FR_PRIVATE, NULL);
+    char a[MAX_PATH]; WideCharToMultiByte(CP_ACP, 0, p, -1, a, sizeof a, NULL, NULL);
+    logmsg("FontFile %s: %s", a, n ? "loaded" : "NOT loaded (missing or not a font file)");
 }
 static void reload_ini(DWORD now) {
     static DWORD last;
@@ -86,7 +105,7 @@ static void reload_ini(DWORD now) {
     last = now;
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (!GetFileAttributesExW(g_ini, GetFileExInfoStandard, &a) || !CompareFileTime(&a.ftLastWriteTime, &g_iniTime)) return;
-    load_ini();
+    load_ini(); load_font_file();
     logmsg("MatchTimer.ini re-read: Enabled=%d Style=%d Font=%s Size=%d MenuX=%d MenuY=%d X=%d Y=%d Align=%d OnlineOnly=%d", g_enabled,
            g_style, g_face, g_size, g_menuX, g_menuY, g_x, g_y, g_align, g_onlineOnly);
 }
@@ -336,11 +355,11 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
 // "box" = Style=2 (replay-panel box, Arial); "campaign" = white serif digits with a crisp black outline, no box, like
 // the campaign objective timers. Pairs: next to the Menu button (box, campaign left of it) and above the minimap
 // (box, campaign right of it). The minimap frame starts 221/1000 H above the bottom edge (2560x1440).
-static ID3DXFont *g_dfont[2]; static IDirect3DDevice9 *g_ddev[2]; static int g_dpx[2];
+static ID3DXFont *g_dfont[2]; static IDirect3DDevice9 *g_ddev[2]; static int g_dpx[2]; static char g_dface[2][64];
 static ID3DXFont *demo_font(IDirect3DDevice9 *dev, int i, const char *face, int px) {
-    if (g_ddev[i] == dev && g_dpx[i] == px) return g_dfont[i];
+    if (g_ddev[i] == dev && g_dpx[i] == px && !strcmp(g_dface[i], face)) return g_dfont[i];
     if (g_dfont[i]) { g_dfont[i]->lpVtbl->Release(g_dfont[i]); g_dfont[i] = NULL; }
-    g_ddev[i] = dev; g_dpx[i] = px;
+    g_ddev[i] = dev; g_dpx[i] = px; lstrcpynA(g_dface[i], face, 64);
     if (FAILED(p_D3DXCreateFontA(dev, px, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                  ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face, &g_dfont[i]))) g_dfont[i] = NULL;
     return g_dfont[i];
@@ -361,7 +380,7 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     g_bbCalls++;
     int pxBox = 20 * H / 1080, pxCamp = 22 * H / 1080;
     if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
-    ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = demo_font(dev, 1, "Book Antiqua", pxCamp);
+    ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = demo_font(dev, 1, g_campFace, pxCamp);
     if (!fb || !fc) return;
     DWORD s = g_play / 1000; char t[16], z[16]; int i;
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
@@ -477,6 +496,7 @@ static int install_d3d_hooks(void) {
 }
 
 static DWORD WINAPI worker(LPVOID _) {
+    load_font_file();
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
     for (int i = 0; vers[i]; i++) {
         HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
