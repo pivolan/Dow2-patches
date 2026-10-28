@@ -364,7 +364,7 @@ static volatile int g_front;          // the main menu (with the name bar) is th
 static wchar_t g_menuName[64];        // own name from SetGamerTag (under g_lock), for the main menu tooltip
 // menu tooltip placement, [MenuTooltip] in the ini, in 1/1000 of the screen height: its right edge and top relative
 // to the cursor (where the game's own "Currently logged in player" appears, which it must cover) and its least width
-static int g_tipDX = 0, g_tipDY = 14, g_tipMinW = 270;
+static int g_tipDX = 3, g_tipDY = 4, g_tipMinW = 300;
 // front-end screens, as the screen manager movie gets them: ActivateFirstScreen(swf) starts the stack,
 // TransitionForward(swf) pushes, TransitionBackward pops. The name bar belongs to main_menu.swf only.
 static char g_screen[8][64]; static int g_nscreen;
