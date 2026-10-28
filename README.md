@@ -7,7 +7,7 @@ exe is a different build.
     make                          # all DLLs into build/
     make STATS_HOST=other.host    # same, with another stats host baked into LobbyStats (default rts.fintebtc.de)
 
-Needs gcc-mingw-w64-i686. CI builds every push and does a dry-run publish of the DLLs as a launcher add-on.
+Needs gcc-mingw-w64-i686. CI builds every push and does a dry-run publish of the DLLs as a launcher add-on; the real publishing is described in Publishing to the launcher below.
 
 Versions: the version of the set lives only in VERSION and needs an entry at the top of CHANGELOG.md. After a merge
 to main CI tags vX.Y.Z; for X.Y.0 it also publishes a GitHub Release with the DLLs and the CHANGELOG entries since the
@@ -52,5 +52,23 @@ matchtimer/
 
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
+
+## Publishing to the launcher
+
+`addons.json` is what the Elite Launcher gives players. Each add-on has a `version`; to ship a new build, raise it and
+merge to `main`. Within ~2 minutes the main server pulls `main`, runs `make`, publishes `build/<dll>` as
+`<id>-<version>` into the launcher's store, points `launcher.json` at it, signs, verifies, syncs the mirrors and posts
+the result to the team's Telegram thread. Players get it on the next launcher refresh (≤ 15 minutes).
+
+- A version is published once and never changes: new code needs a new version (`0.7.1`, `0.8.0`, …). Pushing code
+  without raising the version publishes nothing.
+- Going back = put the old version back into `addons.json` (it is already in the store, nothing is rebuilt).
+- Optional fields override the launcher's texts: `name`, `description` (`{"en": …, "ru": …}`), `default` (on for
+  new players), `conflicts`, `options`. A new add-on needs `dll`, `name` and `description`.
+- Only add-ons listed here are touched; the others in the launcher (automatch, relay) are managed elsewhere.
+- No secrets in GitHub: the server pulls with its deploy key and signs with the store key it already has.
+  If something fails (no build, not a 32-bit DLL, signature check), nothing is published and the thread says why.
+- Test on a branch first: CI builds every push. Don't raise a version in `main` before the DLL has run in a real game,
+  minimised and restored included: everyone with the add-on on gets it.
 
 MIT.
