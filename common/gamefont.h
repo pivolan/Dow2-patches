@@ -1,26 +1,30 @@
-// gamefont.h - the clock's digits in the game's own font, read from the player's game files at run time.
+// gamefont.h - text in the game's own fonts, read from the player's game files at run time (MatchTimer, LobbyStats).
 //
-// The game draws its titles and numbers with "Caslon Antique New", a Flash font (DefineFont3) inside
-// ui\movies\fonts\master_fonts.gfx in GameAssets\Archives\000_data.sga. It isn't a Windows font and we don't ship it:
-// at start the DLL finds the file in the archive (SGA v5), inflates it, takes the glyph outlines of "0123456789:"
-// and later rasterizes them into a texture drawn with the sprite. Anything unexpected: gf_load() fails, the log
-// says why and the clock keeps a Windows font.
+// The game's Flash UI uses fonts embedded in ui\movies\fonts\master_fonts.gfx in GameAssets\Archives\000_data.sga:
+// "Caslon Antique New" (titles, numbers), "Arial Unicode MS" (normal text, tooltips). They aren't Windows fonts and we
+// don't ship them: gf_load() finds the file in the archive (SGA v5), inflates it and takes the outlines (DefineFont3)
+// of the characters a GameFont asks for; gf_ready() rasterizes them into a texture that gf_draw() draws with the
+// sprite. Anything unexpected: gf_load() fails, the log says why and the caller keeps a Windows font.
+// The includer provides logmsg(), <d3d9.h> with COBJMACROS, <stdlib.h> and ID3DXSprite with Draw().
 //
 // SGA v5: header +172 TOC size, +176 data start, +180 TOC offset. TOC: drives (+0), folders (+6), files (+12),
 // strings (+18), each {u32 offset from the TOC, u16 count}. File entry, 22 bytes: name offset (in the strings),
 // data offset (from the data start), compressed size, size, time, flags. Data: a zlib stream.
 
-#define GF_CHARS "0123456789:"
-#define GF_N     11
+#define GF_MAXCH 96
 #define GF_MAXPT 4096
+#define GF_M     3                                                   // margin around each glyph (outline, shadow)
 
 typedef struct { float x0, y0, x1, y1; } GfSeg;
-static struct {
+typedef struct {
+    const char *chars;                      // the characters wanted (ASCII), set by the caller
+    int width;                              // horizontal scale, percent (0 = 100)
     int ok; char name[64];
     float ascent, descent;                  // font units (1024 * 20 per em), y down
-    float adv[GF_N];
-    GfSeg *seg[GF_N]; int nseg[GF_N];
-} g_gf;
+    float adv[GF_MAXCH]; GfSeg *seg[GF_MAXCH]; int nseg[GF_MAXCH];
+    IDirect3DTexture9 *tex; IDirect3DDevice9 *dev; int px, madeWidth, cell;
+    RECT src[GF_MAXCH]; int iadv[GF_MAXCH];   // in the texture, advances in px
+} GameFont;
 
 // ---------- inflate (RFC 1951; after puff.c by Mark Adler) ----------
 typedef struct { const BYTE *in; size_t inlen, inpos; DWORD bitbuf; int bitcnt; BYTE *out; size_t outlen, outpos; } Inf;
@@ -204,61 +208,56 @@ static int gf_shape(Bits *b, GfSeg *out, int cap) {
     }
     return n;
 }
-static int gf_font3(const BYTE *t, size_t len, const char *want) {
+static int gf_font3(GameFont *gf, const BYTE *t, size_t len, const char *want) {
     if (len < 6) return 0;
     BYTE flags = t[2]; int nameLen = t[4];
     if (5 + nameLen + 2 > (int)len) return 0;
     char name[256]; memcpy(name, t + 5, nameLen); name[nameLen] = 0;
-    if (nameLen && !name[nameLen - 1]) nameLen--;
     if (strcmp(name, want)) return 0;
     size_t p = 5 + t[4]; int ng = t[p] | t[p + 1] << 8; p += 2;
     int wideOff = flags & 8, os = wideOff ? 4 : 2;
     size_t tab = p;
     if (tab + (ng + 1) * os > len) return -1;
     #define OFS(i) (wideOff ? *(DWORD *)(t + tab + (i) * 4) : *(WORD *)(t + tab + (i) * 2))
-    size_t codeTab = tab + OFS(ng);
+    size_t codeTab = tab + OFS(ng), lay = codeTab + ng * 2;
     if (codeTab + ng * 2 > len) return -1;
-    float adv[1024] = {0}; int hasLayout = flags & 0x80;
-    size_t lay = codeTab + ng * 2;
-    if (hasLayout && lay + 6 + ng * 2 <= len) {
-        g_gf.ascent = *(short *)(t + lay); g_gf.descent = *(short *)(t + lay + 2);
-        for (int i = 0; i < ng && i < 1024; i++) adv[i] = *(short *)(t + lay + 6 + i * 2);
-    }
+    int hasLayout = (flags & 0x80) && lay + 6 + ng * 2 <= len;
+    if (hasLayout) { gf->ascent = *(short *)(t + lay); gf->descent = *(short *)(t + lay + 2); }
     static GfSeg tmp[GF_MAXPT];
     int found = 0;
-    for (int c = 0; c < GF_N; c++) {
-        int code = GF_CHARS[c], gi = -1;
+    for (int c = 0; gf->chars[c] && c < GF_MAXCH; c++) {
+        int code = (BYTE)gf->chars[c], gi = -1;
         for (int i = 0; i < ng; i++) if (*(WORD *)(t + codeTab + i * 2) == code) { gi = i; break; }
         if (gi < 0) continue;
         Bits b = { t + tab + OFS(gi), (gi + 1 < ng ? OFS(gi + 1) : OFS(ng)) - OFS(gi), 0, 0 };
         int n = gf_shape(&b, tmp, GF_MAXPT);
-        if (n <= 0) continue;
-        g_gf.seg[c] = malloc(n * sizeof(GfSeg)); if (!g_gf.seg[c]) continue;
-        memcpy(g_gf.seg[c], tmp, n * sizeof(GfSeg)); g_gf.nseg[c] = n;
-        g_gf.adv[c] = gi < 1024 ? adv[gi] : 0;
-        if (g_gf.adv[c] <= 0) {                                      // no layout: the outline's width plus a little
+        if (n < 0) continue;                                         // n == 0: an empty glyph (space)
+        if (n) { gf->seg[c] = malloc(n * sizeof(GfSeg)); if (!gf->seg[c]) continue; memcpy(gf->seg[c], tmp, n * sizeof(GfSeg)); }
+        gf->nseg[c] = n;
+        gf->adv[c] = hasLayout ? *(short *)(t + lay + 6 + gi * 2) : 0;
+        if (gf->adv[c] <= 0) {                                       // no layout: the outline's width plus a little
             float mx = 0; for (int i = 0; i < n; i++) if (tmp[i].x1 > mx) mx = tmp[i].x1;
-            g_gf.adv[c] = mx + 1500;
+            gf->adv[c] = mx + 1500;
         }
         found++;
     }
     #undef OFS
-    if (!hasLayout || g_gf.ascent <= 0) { g_gf.ascent = 20480 * 0.9f; g_gf.descent = 20480 * 0.25f; }
-    lstrcpynA(g_gf.name, want, sizeof g_gf.name);
+    if (!hasLayout || gf->ascent <= 0) { gf->ascent = 20480 * 0.9f; gf->descent = 20480 * 0.25f; }
+    lstrcpynA(gf->name, want, sizeof gf->name);
     return found;
 }
 // read the font named `want` from the game's master_fonts (gameDir NULL = the folder of the running exe); 1 = ok
-static int gf_load(const char *want, const wchar_t *gameDir) {
+static int gf_load(GameFont *gf, const char *want, const wchar_t *gameDir) {
     wchar_t dir[MAX_PATH], path[MAX_PATH];
     if (gameDir) _snwprintf(dir, MAX_PATH, L"%ls\\x", gameDir); else GetModuleFileNameW(NULL, dir, MAX_PATH);
     wchar_t *sl = wcsrchr(dir, L'\\'); if (sl) sl[1] = 0; else dir[0] = 0;
     BYTE *swf = NULL; DWORD size = 0;
     for (int i = 0; i < 10 && !swf; i++) {
         _snwprintf(path, MAX_PATH, L"%lsGameAssets\\Archives\\%03d_data.sga", dir, i);
-        swf = sga_read(path, "master_fonts.gfx", &size);
+        if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) swf = sga_read(path, "master_fonts.gfx", &size);
     }
     if (!swf) { logmsg("game font: master_fonts.gfx not found in GameAssets\\Archives\\*_data.sga"); return 0; }
-    int found = 0;
+    int found = 0, wantN = (int)strlen(gf->chars);
     if (size > 21 && (!memcmp(swf, "GFX", 3) || !memcmp(swf, "FWS", 3))) {
         Bits b = { swf + 8, size - 8, 0, 0 };
         int nb = ub(&b, 5); size_t p = 8 + (5 + 4 * nb + 7) / 8 + 4;   // skip the frame RECT, rate and count
@@ -267,26 +266,22 @@ static int gf_load(const char *want, const wchar_t *gameDir) {
             DWORD code = ch >> 6, len = ch & 63;
             if (len == 63) { if (p + 4 > size) break; len = *(DWORD *)(swf + p); p += 4; }
             if (p + len > size || code == 0) break;
-            if (code == 75) found = gf_font3(swf + p, len, want);    // DefineFont3
+            if (code == 75) found = gf_font3(gf, swf + p, len, want);    // DefineFont3
             p += len;
         }
     }
     free(swf);
-    if (found < GF_N) {
-        logmsg("game font: \"%s\" %s in master_fonts.gfx", want, found > 0 ? "lacks some digits" : "not found");
-        for (int c = 0; c < GF_N; c++) { free(g_gf.seg[c]); g_gf.seg[c] = NULL; }
+    if (found < wantN) {
+        logmsg("game font: \"%s\" %s in master_fonts.gfx", want, found > 0 ? "lacks some characters" : "not found");
+        for (int c = 0; c < GF_MAXCH; c++) { free(gf->seg[c]); gf->seg[c] = NULL; }
         return 0;
     }
-    g_gf.ok = 1;
-    logmsg("game font: \"%s\" from master_fonts.gfx (ascent %.0f, descent %.0f)", want, g_gf.ascent, g_gf.descent);
+    gf->ok = 1;
+    logmsg("game font: \"%s\" from master_fonts.gfx (%d characters)", want, found);
     return 1;
 }
 
-// ---------- the digits as a texture: white, alpha = coverage (4x4 samples, even-odd) ----------
-#define GF_M 3                                                       // margin around each glyph for the outline
-static IDirect3DTexture9 *g_gfTex; static IDirect3DDevice9 *g_gfDev; static int g_gfPx, g_gfMadeWidth;
-// g_gfWidth (horizontal scale of the digits, percent) comes from the includer's settings
-static RECT g_gfSrc[GF_N]; static int g_gfAdv[GF_N], g_gfCell;     // source rects, advances and line height in px
+// ---------- the glyphs as a texture: white, alpha = coverage (4x4 samples, even-odd) ----------
 static void gf_raster(const GfSeg *sg, int n, float sx, float s, float ox, float oy, int w, int h, BYTE *out, int pitch) {
     float acc[512], xs[256];
     if (w > 512) return;
@@ -314,75 +309,59 @@ static void gf_raster(const GfSeg *sg, int n, float sx, float s, float ox, float
         for (int x = 0; x < w; x++) { float c = acc[x] > 1 ? 1 : acc[x]; row[x] = (DWORD)(c * 255 + 0.5f) << 24 | 0xFFFFFF; }
     }
 }
-static int gf_ready(IDirect3DDevice9 *dev, int px) {
-    if (!g_gf.ok) return 0;
-    if (g_gfTex && g_gfDev == dev && g_gfPx == px && g_gfMadeWidth == g_gfWidth) return 1;
-    if (g_gfTex) { IDirect3DTexture9_Release(g_gfTex); g_gfTex = NULL; }
-    g_gfDev = dev; g_gfPx = px; g_gfMadeWidth = g_gfWidth;
-    float s = px / (g_gf.ascent + g_gf.descent);                     // px = the line's height, like a Windows font's
-    float sx = s * g_gfWidth / 100;
-    int cell = (int)(px + 0.999f) + 2 * GF_M, tw = 0;
-    for (int c = 0; c < GF_N; c++) { g_gfAdv[c] = (int)(g_gf.adv[c] * sx + 0.5f); tw += g_gfAdv[c] + 2 * GF_M + 2; }
-    if (tw > 4096 || FAILED(IDirect3DDevice9_CreateTexture(dev, tw, cell, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_gfTex, NULL))) {
-        g_gfTex = NULL; g_gf.ok = 0; logmsg("game font: texture %dx%d failed, back to a Windows font", tw, cell); return 0;
+// px = the line's height (ascent + descent), like a Windows font's; 1 = the texture is there
+static int gf_ready(GameFont *gf, IDirect3DDevice9 *dev, int px) {
+    if (!gf->ok) return 0;
+    int wpc = gf->width ? gf->width : 100;
+    if (gf->tex && gf->dev == dev && gf->px == px && gf->madeWidth == wpc) return 1;
+    if (gf->tex) { IDirect3DTexture9_Release(gf->tex); gf->tex = NULL; }
+    gf->dev = dev; gf->px = px; gf->madeWidth = wpc;
+    float s = px / (gf->ascent + gf->descent), sx = s * wpc / 100;
+    int cell = px + 2 * GF_M, n = (int)strlen(gf->chars), rowW = 0, rows = 1, x = 0;
+    for (int c = 0; c < n; c++) {                                    // the glyphs in rows up to 2048 px
+        gf->iadv[c] = (int)(gf->adv[c] * sx + 0.5f);
+        int w = gf->iadv[c] + 2 * GF_M + 2;
+        if (x + w > 2048) { rows++; x = 0; }
+        x += w; if (x > rowW) rowW = x;
+    }
+    if (FAILED(IDirect3DDevice9_CreateTexture(dev, rowW, cell * rows, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &gf->tex, NULL))) {
+        gf->tex = NULL; gf->ok = 0; logmsg("game font: texture %dx%d failed, back to a Windows font", rowW, cell * rows); return 0;
     }
     D3DLOCKED_RECT lr;
-    if (FAILED(IDirect3DTexture9_LockRect(g_gfTex, 0, &lr, NULL, 0))) { IDirect3DTexture9_Release(g_gfTex); g_gfTex = NULL; g_gf.ok = 0; return 0; }
-    memset(lr.pBits, 0, lr.Pitch * cell);
-    int x = 0;
-    for (int c = 0; c < GF_N; c++) {
-        int w = g_gfAdv[c] + 2 * GF_M;
-        SetRect(&g_gfSrc[c], x, 0, x + w, cell);
-        gf_raster(g_gf.seg[c], g_gf.nseg[c], sx, s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, (BYTE *)lr.pBits + x * 4, lr.Pitch);
+    if (FAILED(IDirect3DTexture9_LockRect(gf->tex, 0, &lr, NULL, 0))) { IDirect3DTexture9_Release(gf->tex); gf->tex = NULL; gf->ok = 0; return 0; }
+    memset(lr.pBits, 0, lr.Pitch * cell * rows);
+    int y = 0; x = 0;
+    for (int c = 0; c < n; c++) {
+        int w = gf->iadv[c] + 2 * GF_M;
+        if (x + w + 2 > 2048) { y += cell; x = 0; }
+        SetRect(&gf->src[c], x, y, x + w, y + cell);
+        if (gf->nseg[c])
+            gf_raster(gf->seg[c], gf->nseg[c], sx, s, (float)GF_M, GF_M + gf->ascent * s, w, cell, (BYTE *)lr.pBits + y * lr.Pitch + x * 4, lr.Pitch);
         x += w + 2;
     }
-    IDirect3DTexture9_UnlockRect(g_gfTex, 0);
-    g_gfCell = (int)(px + 0.999f);
-    logmsg("game font: digits drawn at %d px", px);
+    IDirect3DTexture9_UnlockRect(gf->tex, 0);
+    gf->cell = px;
+    logmsg("game font: \"%s\" drawn at %d px", gf->name, px);
     return 1;
 }
-static int gf_width(const char *t) {
+static int gf_index(const GameFont *gf, char ch) { const char *c = ch ? strchr(gf->chars, ch) : NULL; return c ? (int)(c - gf->chars) : -1; }
+static int gf_width(const GameFont *gf, const char *t) {
     int w = 0;
-    for (; *t; t++) { const char *c = strchr(GF_CHARS, *t); w += c ? g_gfAdv[c - GF_CHARS] : g_gfAdv[0] / 2; }
+    for (; *t; t++) { int i = gf_index(gf, *t); w += i >= 0 ? gf->iadv[i] : gf->iadv[0] / 2; }
     return w;
 }
 // draw t in rect r (DT_LEFT/DT_CENTER/DT_RIGHT, DT_VCENTER) with the sprite (between Begin and End)
-static void gf_draw(ID3DXSprite *sp, const char *t, const RECT *r, DWORD fmt, DWORD color) {
-    int w = gf_width(t);
+static void gf_draw(const GameFont *gf, ID3DXSprite *sp, const char *t, const RECT *r, DWORD fmt, DWORD color) {
+    int w = gf_width(gf, t);
     int x = fmt & DT_RIGHT ? r->right - w : fmt & DT_CENTER ? (r->left + r->right - w) / 2 : r->left;
-    int y = fmt & DT_VCENTER ? (r->top + r->bottom - g_gfCell) / 2 : r->top;
+    int y = fmt & DT_VCENTER ? (r->top + r->bottom - gf->cell) / 2 : r->top;
     for (; *t; t++) {
-        const char *c = strchr(GF_CHARS, *t);
-        if (!c) { x += g_gfAdv[0] / 2; continue; }
-        int i = c - GF_CHARS;
-        float pos[3] = { (float)(x - GF_M), (float)(y - GF_M), 0.0f };
-        sp->lpVtbl->Draw(sp, g_gfTex, &g_gfSrc[i], NULL, pos, color);
-        x += g_gfAdv[i];
+        int i = gf_index(gf, *t);
+        if (i < 0) { x += gf->iadv[0] / 2; continue; }
+        if (gf->nseg[i]) {
+            float pos[3] = { (float)(x - GF_M), (float)(y - GF_M), 0.0f };
+            sp->lpVtbl->Draw(sp, gf->tex, &gf->src[i], NULL, pos, color);
+        }
+        x += gf->iadv[i];
     }
-}
-
-// rundll32 MatchTimer.dll,GameFontTest <game folder>: reads the font as in the game and writes gamefont_test.pgm
-// (the digits at 48 px) next to the DLL, to check the font outside the game
-__declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cmd, int show) {
-    wchar_t dir[MAX_PATH], out[MAX_PATH];
-    MultiByteToWideChar(CP_ACP, 0, cmd, -1, dir, MAX_PATH);
-    for (size_t n = wcslen(dir); n && dir[n - 1] == L' '; ) dir[--n] = 0;          // rundll32 adds a trailing space
-    if (!gf_load(GAME_FONT, dir)) return;
-    float s = 48 / (g_gf.ascent + g_gf.descent);
-    int cell = 48 + 2 * GF_M, tw = 0, x = 0;
-    for (int c = 0; c < GF_N; c++) tw += (int)(g_gf.adv[c] * s + 0.5f) + 2 * GF_M;
-    BYTE *rgba = calloc(tw * cell, 4), *grey = malloc(tw * cell);
-    if (!rgba || !grey) return;
-    for (int c = 0; c < GF_N; c++) {
-        int w = (int)(g_gf.adv[c] * s + 0.5f) + 2 * GF_M;
-        gf_raster(g_gf.seg[c], g_gf.nseg[c], s, s, (float)GF_M, GF_M + g_gf.ascent * s, w, cell, rgba + x * 4, tw * 4);
-        x += w;
-    }
-    for (int i = 0; i < tw * cell; i++) grey[i] = rgba[i * 4 + 3];
-    wcscpy(out, g_ini); wchar_t *sl = wcsrchr(out, L'\\'); if (sl) sl[1] = 0; else out[0] = 0;
-    wcscat(out, L"gamefont_test.pgm");
-    FILE *f = _wfopen(out, L"wb");
-    if (f) { fprintf(f, "P5 %d %d 255\n", tw, cell); fwrite(grey, 1, tw * cell, f); fclose(f); }
-    logmsg("GameFontTest: %d x %d written", tw, cell);
-    free(rgba); free(grey);
 }

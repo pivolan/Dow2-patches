@@ -190,7 +190,8 @@ typedef HRESULT (WINAPI *D3DXCreateSprite_t)(IDirect3DDevice9 *, ID3DXSprite **o
 static D3DXCreateFontA_t p_D3DXCreateFontA;
 static D3DXCreateSprite_t p_D3DXCreateSprite;
 #define D3DXSPRITE_ALPHABLEND   0x10
-#include "gamefont.h"
+#include "../common/gamefont.h"
+static GameFont g_gf = { "0123456789:" };                     // the clock's digits in the game's Caslon Antique New
 
 // ---------- drawing (render thread) ----------
 typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
@@ -284,7 +285,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     g_bbCalls++;
     int px = g_size * H / 1080; if (px < 10) px = 10;               // Size is for 1080p, scaled with the screen height
     if (g_lost || !ensure_font(dev, px)) return;
-    int game = g_style && !strcmp(g_face, GAME_FONT) && gf_ready(dev, px);   // the game's own digits (gamefont.h)
+    int game = g_style && !strcmp(g_face, GAME_FONT) && (g_gf.width = g_gfWidth, gf_ready(&g_gf, dev, px));   // the game's own digits (gamefont.h)
     DWORD s = g_play / 1000; char t[16];
 
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
@@ -296,7 +297,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         for (i = 0; t[i]; i++) z[i] = t[i] == ':' ? ':' : '0';
         z[i] = 0;
         RECT m = {0, 0, 0, 0};
-        if (game) m.right = gf_width(z); else g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
+        if (game) m.right = gf_width(&g_gf, z); else g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
         int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad;
         int top = g_menuY * H / 1000 - bh / 2;
         if (g_anchor) {                                              // right of the victory points bar (centred on the screen)
@@ -332,13 +333,13 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
         for (int i = 0; (g_outline >> 24) && i < 8; i++) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
-            if (game) gf_draw(g_sprite, t, &q, fmt, halo); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
+            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, halo); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
         }
         if (g_shadow) {                                              // soft drop shadow down-right, like the game's own HUD text
             RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-            if (game) gf_draw(g_sprite, t, &q, fmt, 0xB0000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
+            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, 0xB0000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
         }
-        if (game) gf_draw(g_sprite, t, &r, fmt, g_color); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
+        if (game) gf_draw(&g_gf, g_sprite, t, &r, fmt, g_color); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
@@ -362,11 +363,11 @@ static void demo_text(ID3DXFont *f, const char *t, RECT r, DWORD fmt, DWORD colo
     static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
     for (int i = 0; (outline >> 24) && i < 8; i++) {
         RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
-        if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline); else gf_draw(g_sprite, t, &q, fmt, outline);
+        if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline); else gf_draw(&g_gf, g_sprite, t, &q, fmt, outline);
     }
     RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0x80000000); else gf_draw(g_sprite, t, &q, fmt, 0x80000000);   // drop shadow
-    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color); else gf_draw(g_sprite, t, &r, fmt, color);
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0x80000000); else gf_draw(&g_gf, g_sprite, t, &q, fmt, 0x80000000);   // drop shadow
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color); else gf_draw(&g_gf, g_sprite, t, &r, fmt, color);
 }
 static void draw_demo(IDirect3DDevice9 *dev) {
     int W, H;
@@ -374,7 +375,7 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     g_bbCalls++;
     int pxBox = 20 * H / 1080, pxCamp = 26 * H / 1080;
     if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
-    int game = !strcmp(g_campFace, GAME_FONT) && gf_ready(dev, pxCamp);    // the game's font, else Book Antiqua
+    int game = !strcmp(g_campFace, GAME_FONT) && (g_gf.width = g_gfWidth, gf_ready(&g_gf, dev, pxCamp));    // the game's font, else Book Antiqua
     ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = game ? NULL : demo_font(dev, 1, !strcmp(g_campFace, GAME_FONT) ? "Book Antiqua" : g_campFace, pxCamp);
     if (!fb || (!fc && !game)) return;
     DWORD s = g_play / 1000; char t[16], z[16]; int i;
@@ -398,7 +399,7 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     left = W / 2 + g_vpX * H / 1000;
     SetRect(&box[2], left, top, left + bw, top + bh);
     RECT gc = { box[2].right + gap, top, box[2].right + gap + W, top + bh };
-    int gw = game ? gf_width(t) : 0;
+    int gw = game ? gf_width(&g_gf, t) : 0;
     if (!game && fc) { RECT q = {0, 0, 0, 0}; fc->lpVtbl->DrawTextA(fc, NULL, t, -1, &q, DT_SINGLELINE | DT_CALCRECT, 0); gw = q.right; }
     ID3DXFont *fa = demo_font(dev, 2, "Book Antiqua", pxCamp);
     SetRect(&ba, gc.left + gw + 2 * gap, top, gc.left + gw + 2 * gap + W, top + bh);
@@ -500,7 +501,7 @@ static int install_d3d_hooks(void) {
 }
 
 static DWORD WINAPI worker(LPVOID _) {
-    gf_load(GAME_FONT, NULL);                                            // from the game's files; on failure Book Antiqua
+    gf_load(&g_gf, GAME_FONT, NULL);                                            // from the game's files; on failure Book Antiqua
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
     for (int i = 0; vers[i]; i++) {
         HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
@@ -547,4 +548,31 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     if (!g_enabled) { logmsg("disabled in MatchTimer.ini"); return TRUE; }
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     return TRUE;
+}
+
+// rundll32 MatchTimer.dll,GameFontTest <game folder>: reads the game font as in the game and writes gamefont_test.pgm
+// (the digits at 48 px) next to the DLL, to check it outside the game
+__declspec(dllexport) void CALLBACK GameFontTest(HWND hw, HINSTANCE hi, LPSTR cmd, int show) {
+    wchar_t dir[MAX_PATH], out[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, cmd, -1, dir, MAX_PATH);
+    for (size_t n = wcslen(dir); n && dir[n - 1] == L' '; ) dir[--n] = 0;          // rundll32 adds a trailing space
+    static GameFont gf = { "0123456789:" };
+    if (!gf_load(&gf, GAME_FONT, dir)) return;
+    float s = 48 / (gf.ascent + gf.descent);
+    int n = (int)strlen(gf.chars), cell = 48 + 2 * GF_M, tw = 0, x = 0;
+    for (int c = 0; c < n; c++) tw += (int)(gf.adv[c] * s + 0.5f) + 2 * GF_M;
+    BYTE *rgba = calloc(tw * cell, 4), *grey = malloc(tw * cell);
+    if (!rgba || !grey) return;
+    for (int c = 0; c < n; c++) {
+        int w = (int)(gf.adv[c] * s + 0.5f) + 2 * GF_M;
+        gf_raster(gf.seg[c], gf.nseg[c], s, s, (float)GF_M, GF_M + gf.ascent * s, w, cell, rgba + x * 4, tw * 4);
+        x += w;
+    }
+    for (int i = 0; i < tw * cell; i++) grey[i] = rgba[i * 4 + 3];
+    wcscpy(out, g_ini); wchar_t *sl = wcsrchr(out, L'\\'); if (sl) sl[1] = 0; else out[0] = 0;
+    wcscat(out, L"gamefont_test.pgm");
+    FILE *f = _wfopen(out, L"wb");
+    if (f) { fprintf(f, "P5 %d %d 255\n", tw, cell); fwrite(grey, 1, tw * cell, f); fclose(f); }
+    logmsg("GameFontTest: %d x %d written", tw, cell);
+    free(rgba); free(grey);
 }
