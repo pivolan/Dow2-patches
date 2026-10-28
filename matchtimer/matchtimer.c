@@ -373,7 +373,7 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     int W, H;
     if (!on_back_buffer(dev, &W, &H)) return;
     g_bbCalls++;
-    int pxBox = 20 * H / 1080, pxCamp = 26 * H / 1080;
+    int pxBox = 18 * H / 1080, pxCamp = 21 * H / 1080;
     if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
     int game = !strcmp(g_campFace, GAME_FONT) && (g_gf.width = g_gfWidth, gf_ready(&g_gf, dev, pxCamp));    // the game's font, else Book Antiqua
     ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = game ? NULL : demo_font(dev, 1, !strcmp(g_campFace, GAME_FONT) ? "Book Antiqua" : g_campFace, pxCamp);
