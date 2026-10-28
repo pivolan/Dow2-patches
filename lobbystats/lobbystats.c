@@ -4,6 +4,7 @@
 // Invoke(method, flags, GFxValue* args, count)). When the engine sends Receive_PopulatePlayerList
 // to the lobby movie, we append the rating to the name in each player slot and replace
 // the slot tooltip (m_tooltip field) with "rating / wins / games / hours".
+// The main menu gets the own rating after the name too (Receive_SetGamerTag).
 // Data is fetched by a background thread from the stats service (<Server>/stats/api/lobby), which reads the public Relic API.
 // A name is first shown without numbers; they appear on the next lobby update (join, ready,
 // race change) and immediately in later lobbies (disk cache next to the DLL).
@@ -347,8 +348,33 @@ static void probe(void *movie, const char *method, GFxValue *args, unsigned coun
     LeaveCriticalSection(&g_probeLock);
 }
 
+// main menu: own name in the top right corner, Receive_SetGamerTag(wstr name, num). Looked up by name, as the lobby
+// does for the own slot. Numbers come from the cache; a name not cached yet is fetched and shows up the next time.
+static wchar_t g_tagBuf[128];
+static void decorate_gamertag(GFxValue *args) {
+    if (args[0].type != GFX_WSTRING || !args[0].v.ws || !args[0].v.ws[0] || args[0].v.ws == g_tagBuf) return;
+    const wchar_t *name = args[0].v.ws; wchar_t key[64]; wcsncpy(key, name, 63); key[63] = 0;
+    int want = 0;
+    EnterCriticalSection(&g_lock);
+    Entry *e = find(key);
+    if (!e || !e->fetched || GetTickCount() - e->fetched > 10 * 60 * 1000) {
+        int dup = 0;
+        for (int k = 0; k < g_npending; k++) if (!wcscmp(g_pending[k], key)) dup = 1;
+        if (!dup && g_npending < 16) { wcsncpy(g_pending[g_npending++], key, 63); want = 1; }
+        if (!e) { e = find_or_add(key); e->fetched = 0; }
+    }
+    if (e->known && g_stats && g_showInName) {
+        _snwprintf(g_tagBuf, 127, L"%ls  [%d]", name, e->rating); g_tagBuf[127] = 0;
+        args[0].v.ws = g_tagBuf;
+    }
+    LeaveCriticalSection(&g_lock);
+    if (want) SetEvent(g_wake);
+}
+
 static char __fastcall hook(void *self, void *edx, const char *method, int flags, GFxValue *args, unsigned count) {
     if (g_probe && method) probe(self, method, args, count);
+    if (method && args && count >= 1 && !strcmp(method, "Receive_SetGamerTag") && !IsBadReadPtr(args, sizeof(GFxValue)))
+        decorate_gamertag(args);
     if (method && args && !strcmp(method, "Receive_PopulatePlayerList") && count < 4096 && !IsBadReadPtr(args, count * sizeof(GFxValue)))
         decorate(args, count);
     if (method && args && count >= 1 && !strcmp(method, "Receive_SetMaxPlayers") && !IsBadReadPtr(args, sizeof(GFxValue)) && args[0].type == GFX_NUMBER)
@@ -388,7 +414,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.1%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.7.2%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
