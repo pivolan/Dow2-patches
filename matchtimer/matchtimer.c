@@ -37,14 +37,14 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 21, g_onlineOnly = 0;
-static DWORD g_color = 0xFFFFF8F0, g_outline = 0;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 25, g_onlineOnly = 0;
+static DWORD g_color = 0xFFFFFFFF, g_outline = 0;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
-static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
+static int g_style = 1, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
 // Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre.
-static int g_anchor = 0, g_vpX = 126;
+static int g_anchor = 2, g_vpX = 126;
 // Anchor=2: above the minimap (its frame starts 221/1000 H above the bottom edge): left edge MapX, middle MapY above
 // the bottom edge, in 1/1000 of the screen height
 static int g_mapX = 7, g_mapY = 239;
@@ -70,16 +70,16 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 21, 8, 200);
+    g_size       = ini_int(L"Size", 25, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"FFF8F0");
+    g_color      = ini_color(L"Color", L"FFFFFF");
     g_outline    = ini_color(L"Outline", L"");
-    g_style      = ini_int(L"Style", 2, 0, 2);
+    g_style      = ini_int(L"Style", 1, 0, 2);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
-    g_anchor     = ini_int(L"Anchor", 0, 0, 2);
+    g_anchor     = ini_int(L"Anchor", 2, 0, 2);
     g_mapX       = ini_int(L"MapX", 7, 0, 2000);
     g_mapY       = ini_int(L"MapY", 239, 0, 1000);
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
@@ -335,9 +335,17 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
             if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, halo); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
         }
-        if (g_shadow) {                                              // soft drop shadow down-right, like the game's own HUD text
-            RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-            if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, 0x80000000); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, 0xB0000000);
+        if (g_shadow) {
+            // the game's own text shadow (replay timer, campaign objectives: DropShadowFilter distance 2, angle 70 deg,
+            // blur 1, strength 0.75, black): 2 px down and a bit right at 1080p, a light blur around it
+            int sx = H >= 1620 ? 2 : 1, sy = 2 * H / 1080 > 2 ? 2 * H / 1080 : 2;
+            static const int bx[4] = {-1, 1, 0, 0}, by[4] = {0, 0, -1, 1};
+            for (int i = 0; i < 5; i++) {
+                RECT q = { r.left + sx, r.top + sy, r.right + sx, r.bottom + sy };
+                DWORD c = 0xC0000000;
+                if (i < 4) { OffsetRect(&q, bx[i], by[i]); c = 0x30000000; }
+                if (game) gf_draw(&g_gf, g_sprite, t, &q, fmt, c); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, c);
+            }
         }
         if (game) gf_draw(&g_gf, g_sprite, t, &r, fmt, g_color); else g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &r, fmt, g_color);
         g_sprite->lpVtbl->End(g_sprite);
