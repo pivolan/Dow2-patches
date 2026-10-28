@@ -19,7 +19,8 @@ obsfix/
     the answer for 500 ms. Write-up with addresses: docs/OBSERVER_LAG.md
 
 lobbystats/
-    Relic rating next to player names in the lobby, plus a tooltip with win rate, games and Steam hours.
+    Relic rating next to player names in the lobby, plus a tooltip with win rate, games and Steam hours; your own
+    rating and that tooltip in the main menu too (the tooltip in the game's own font, read from its files).
     It only reads the lobby list: no kicking, no chat commands, no extra menus. Data comes from a small
     web service that reads the public Relic API (host: rts.fintebtc.de, or STATS_HOST at build time, or Server= in
     LobbyStats.ini). It runs in its own thread and doesn't touch the game's netcode.
