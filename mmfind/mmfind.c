@@ -180,7 +180,8 @@ static const char *RACES[] = {"chaos_space_marines","eldar","imperial_guard","or
 static HANDLE g_wake;
 static volatile int g_coverWant; static wchar_t g_coverLine[160]; static int g_sending;
 
-static void set_state(int s) { logmsg("state %s -> %s", SN[g_state], SN[s]); g_state = s; g_stateTick = GetTickCount(); if (s == S_FAIL) { g_coverWant = 0; g_wantLeave = 1; } }
+static void set_state(int s) { logmsg("state %s -> %s", SN[g_state], SN[s]); g_state = s; g_stateTick = GetTickCount(); if (s == S_FAIL) { g_coverWant = 0; g_wantLeave = 1; }
+    if (s == S_IDLE || s == S_SEARCH || s == S_FAIL) SetEnvironmentVariableA("DOW2_RELAY_USE", "0"); }   // no automatch lobby: Relic
 static DWORD in_state(void) { return GetTickCount() - g_stateTick; }
 
 // ---------------- ruined loading: MMFind_match.txt holds the ladder lobby while the match loads ----------------
@@ -306,10 +307,12 @@ static DWORD WINAPI net_worker(LPVOID _) {
             for (int i = 0; i < g_nmaps && L < 5800; i++) if (mode_map(i, g_mode) && !g_off[g_mode][i]) {
                 char m8[160]; WideCharToMultiByte(CP_UTF8, 0, g_maps[i], -1, m8, sizeof m8, NULL, NULL);
                 L += snprintf(maps + L, sizeof maps - L, "%s\"%s\"", L ? "," : "", m8); }
-            int own = GetModuleHandleA("Relay.dll") != NULL;      // our own game server in Moscow: only players who have it can play together
+            int own = GetModuleHandleA("Relay.dll") != NULL;      // our own game server: Relay 7 plays only with players who have it,
+            char rv[8] = ""; GetEnvironmentVariableA("DOW2_RELAY", rv, sizeof rv);   // Relay 8 "8c": compatible, any lobby (see ladder.py)
+            int compat = own && strchr(rv, 'c') != NULL;
             snprintf(body, sizeof body, "{\"steam\":\"%llu\",\"mode\":\"%s\",\"name\":\"%s\",\"race\":\"%s\",\"hero\":\"%d\",\"maps\":[%s],\"max_diff\":%d%s%s,\"group\":\"%s\"}",
                      g_mySteam, MODE_KEY[g_mode], nm, (g_random ? "random" : g_race >= 0 && g_race < 9 ? RACES[g_race] : ""), g_hero, maps, g_maxDiff, g_testBots ? ",\"bots\":true" : "",
-                     own ? ",\"own_server\":true" : "", g_group);
+                     own ? (compat ? ",\"own_server\":true,\"relay_compat\":true" : ",\"own_server\":true") : "", g_group);
             http_post(L"join", body, res, sizeof res); logmsg("join -> %s", res);
             g_queue = jint(res, MODE_KEY[g_mode], -1);
         }
@@ -347,6 +350,8 @@ static DWORD WINAPI net_worker(LPVOID _) {
                 const char *e = strstr(res, "\"enemies\""); if (e) jstr(e, "name", en, sizeof en);
                 MultiByteToWideChar(CP_UTF8, 0, en, -1, g_oppName, 64);
                 parse_roster(res);
+                // Relay 8 in its compatible mode uses our game server only for this: an automatch where everyone has it
+                SetEnvironmentVariableA("DOW2_RELAY_USE", strstr(res, "\"own_server\": true") || strstr(res, "\"own_server\":true") ? "1" : "0");
                 if (st == S_SEARCH) {
                     logmsg("matched: %s", res);
                     g_role = !strcmp(role, "host") ? 1 : !strcmp(role, "watcher") ? 3 : 2;
@@ -1208,7 +1213,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.23 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.23f start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;
