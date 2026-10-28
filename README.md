@@ -5,7 +5,7 @@ Plain C, built with MinGW. Every patch checks the bytes it is about to change an
 exe is a different build.
 
     make                          # all DLLs into build/
-    make STATS_HOST=your.host     # same, with the stats host baked into LobbyStats
+    make STATS_HOST=other.host    # same, with another stats host baked into LobbyStats (default rts.fintebtc.de)
 
 Needs gcc-mingw-w64-i686. CI builds every push and does a dry-run publish of the DLLs as a launcher add-on.
 
@@ -21,7 +21,7 @@ obsfix/
 lobbystats/
     Relic rating next to player names in the lobby, plus a tooltip with win rate, games and Steam hours.
     It only reads the lobby list: no kicking, no chat commands, no extra menus. Data comes from a small
-    web service that reads the public Relic API (host: STATS_HOST at build time, or Server= in
+    web service that reads the public Relic API (host: rts.fintebtc.de, or STATS_HOST at build time, or Server= in
     LobbyStats.ini). It runs in its own thread and doesn't touch the game's netcode.
 
 reinforcefix/
