@@ -41,8 +41,10 @@ static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
 static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
-// Anchor=1 (Style=2): the box right of the victory points bar instead; VpX = its left edge from the screen centre
+// Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre
 static int g_anchor = 0, g_vpX = 126;
+// opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
+static int g_outlineAlpha = 144;
 static char g_face[64] = "Arial";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
@@ -71,6 +73,7 @@ static void load_ini(void) {
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
     g_anchor     = ini_int(L"Anchor", 0, 0, 1);
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
+    g_outlineAlpha = ini_int(L"OutlineAlpha", 144, 0, 255);
     wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
@@ -292,10 +295,11 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         r = box;
         fmt = DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER;
         if (!ensure_box(dev, bw, bh)) box.right = box.left;          // no texture: text only
-    } else if (g_style) {                                            // right edge next to the Menu button, centred on it
-        int right = W - g_menuX * H / 1000, cy = g_menuY * H / 1000;
-        SetRect(&r, right - W, cy - px, right, cy + px);
-        fmt = DT_SINGLELINE | DT_NOCLIP | DT_RIGHT | DT_VCENTER;
+    } else if (g_style) {                                            // text only, next to the Menu button or the VP bar
+        int cy = g_menuY * H / 1000;
+        if (g_anchor) { int left = W / 2 + g_vpX * H / 1000; SetRect(&r, left, cy - px, left + W, cy + px); }
+        else { int right = W - g_menuX * H / 1000; SetRect(&r, right - W, cy - px, right, cy + px); }
+        fmt = DT_SINGLELINE | DT_NOCLIP | (g_anchor ? DT_LEFT : DT_RIGHT) | DT_VCENTER;
     } else {
         int x = W * g_x / 100, y = H * g_y / 100;
         SetRect(&r, g_align == 0 ? x : x - W, y, g_align == 2 ? x : x + W, y + 2 * px);
@@ -309,8 +313,8 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
             float pos[3] = { (float)box.left, (float)box.top, 0.0f };
             g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF);
         }
-        // optional outline (Outline= empty: none); Style=1 makes it a half-transparent halo
-        DWORD halo = g_style ? (g_outline & 0xFFFFFF) | 0x90000000 : g_outline;
+        // optional outline (Outline= empty: none); in Style=1/2 OutlineAlpha sets how solid it is
+        DWORD halo = g_style ? (g_outline & 0xFFFFFF) | (DWORD)g_outlineAlpha << 24 : g_outline;
         static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
         for (int i = 0; (g_outline >> 24) && i < 8; i++) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
