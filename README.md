@@ -5,7 +5,7 @@ Plain C, built with MinGW. Every patch checks the bytes it is about to change an
 exe is a different build.
 
     make                          # all DLLs into build/
-    make STATS_HOST=your.host     # same, with the stats host baked into LobbyStats
+    make STATS_HOST=other.host    # same, with another stats host baked into LobbyStats (default rts.fintebtc.de)
 
 Needs gcc-mingw-w64-i686. CI builds every push and does a dry-run publish of the DLLs as a launcher add-on.
 
@@ -19,9 +19,10 @@ obsfix/
     the answer for 500 ms. Write-up with addresses: docs/OBSERVER_LAG.md
 
 lobbystats/
-    Relic rating next to player names in the lobby, plus a tooltip with win rate, games and Steam hours.
+    Relic rating next to player names in the lobby, plus a tooltip with win rate, games and Steam hours; your own
+    rating and that tooltip in the main menu too (the tooltip in the game's own font, read from its files).
     It only reads the lobby list: no kicking, no chat commands, no extra menus. Data comes from a small
-    web service that reads the public Relic API (host: STATS_HOST at build time, or Server= in
+    web service that reads the public Relic API (host: rts.fintebtc.de, or STATS_HOST at build time, or Server= in
     LobbyStats.ini). It runs in its own thread and doesn't touch the game's netcode.
 
 reinforcefix/
@@ -44,8 +45,8 @@ cgnumbers/
     the game's Direct3D9 (DXVK-safe). Stage 1 proves the render path; reading squads/groups is stage 2.
 
 matchtimer/
-    Match clock (experimental). MM:SS of game time since the match started (pauses not counted), in a box next
-    to the Menu button drawn like the game's own (replay panel), through the game's Direct3D9 like CGNumbers.
+    Match clock (experimental). MM:SS of game time since the match started (pauses not counted), above the
+    minimap like the campaign timers, in the game's own font (read from its files), through Direct3D9.
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 

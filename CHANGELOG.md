@@ -4,6 +4,15 @@ Every version gets an entry here before it reaches `main`. CI then tags `vX.Y.Z`
 version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entries since the previous `X.Y.0`.
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
+## 0.1.2 — 2026-10-28
+- MatchTimer v2: the digits in the game's own Caslon Antique New, read from the player's game files
+  (common/gamefont.h, nothing of the game shipped), above the minimap with the game's own text shadow, like the campaign
+  timers; Style=2 box, Anchor=0 by the Menu button, Anchor=1 by the VP bar.
+- DLLs are stripped (-s): 25-82 KB instead of ~220-280 KB.
+- LobbyStats v0.7.5: own rating after the name in the main menu and the stats tooltip on hover over it (the game's own
+  Arial Unicode MS, read from its files, in a frame like the game's tooltips); the stats host
+  is baked in by default, so CI builds show numbers again; `[Debug] LogInvoke=1` logs the Flash calls of the UI.
+
 ## 0.1.1 — 2026-10-28
 - MatchTimer v1: match clock (MM:SS of game time, pauses not counted) in a box next to the Menu button, experimental.
 
