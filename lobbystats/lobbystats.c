@@ -196,12 +196,12 @@ typedef char (__fastcall *InvokeFn)(void *self, void *edx, const char *method, i
 static InvokeFn g_orig;
 static wchar_t g_nameBuf[16][128], g_tipBuf[16][320];
 
-// the stats tooltip (320 wchar_t): lobby slots and the main menu name
+// the stats tooltip (320 wchar_t): lobby slots (with the name on top) and the main menu name (name = NULL: it is yours)
 static void format_tip(wchar_t *out, const wchar_t *name, const Entry *e, int wr, int games) {
     wchar_t hours[48] = L"";
     if (e->hours >= 0) _snwprintf(hours, 47, L"\nSteam hours: %d", e->hours);
-    _snwprintf(out, 319, L"%ls\nRelic rating: %d\nWin rate: %d%%  (%d W / %d L)\nGames: %d%ls",
-               name, e->rating, wr, e->wins, e->losses, games, hours);
+    _snwprintf(out, 319, L"%ls%lsRelic rating: %d\nWin rate: %d%%  (%d W / %d L)\nGames: %d%ls",
+               name ? name : L"", name ? L"\n" : L"", e->rating, wr, e->wins, e->losses, games, hours);
     out[319] = 0;
 }
 
@@ -543,7 +543,7 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     Entry *e = g_menuName[0] ? find(g_menuName) : NULL;
     if (e && e->known) {
         int games = e->wins + e->losses, wr = games ? (e->wins * 100 + games / 2) / games : 0;
-        format_tip(tip, g_menuName, e, wr, games);
+        format_tip(tip, NULL, e, wr, games);
     }
     LeaveCriticalSection(&g_lock);
     if (!tip[0]) return;
