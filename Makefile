@@ -2,8 +2,8 @@
 CC = i686-w64-mingw32-gcc
 CFLAGS = -O2 -Wall -Wno-unused-function -Wno-misleading-indentation -Wno-stringop-truncation
 OUT = build
-# stats service host for LobbyStats (can also be set later in LobbyStats.ini: [LobbyStats] Server=host)
-STATS_HOST ?=
+# stats service host for LobbyStats, baked into the DLL (make STATS_HOST=other.host, or later in LobbyStats.ini: [LobbyStats] Server=host)
+STATS_HOST ?= rts.fintebtc.de
 STATS = $(if $(STATS_HOST),-DSTATS_HOST='L"$(STATS_HOST)"',)
 
 all: $(OUT)/ObsFix.dll $(OUT)/LobbyStats.dll $(OUT)/winmm.dll $(OUT)/FrameProbe.dll $(OUT)/ReinforceFix.dll
