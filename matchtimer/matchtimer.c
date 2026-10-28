@@ -43,8 +43,11 @@ static DWORD g_color = 0xFFFFF8F0, g_outline = 0;
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
 static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
-// Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre
+// Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre.
 static int g_anchor = 0, g_vpX = 126;
+// Anchor=2: above the minimap (its frame starts 221/1000 H above the bottom edge): left edge MapX, middle MapY above
+// the bottom edge, in 1/1000 of the screen height
+static int g_mapX = 7, g_mapY = 239;
 // opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
 static int g_outlineAlpha = 160;
 static char g_face[64] = "Caslon Antique New";
@@ -76,7 +79,9 @@ static void load_ini(void) {
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
-    g_anchor     = ini_int(L"Anchor", 0, 0, 1);
+    g_anchor     = ini_int(L"Anchor", 0, 0, 2);
+    g_mapX       = ini_int(L"MapX", 7, 0, 2000);
+    g_mapY       = ini_int(L"MapY", 239, 0, 1000);
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 160, 0, 255);
     g_gfWidth    = ini_int(L"GameFontWidth", 100, 50, 200);
@@ -294,9 +299,9 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         RECT m = {0, 0, 0, 0};
         if (game) m.right = gf_width(&g_gf, z); else g_font->lpVtbl->DrawTextA(g_font, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
         int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad;
-        int top = g_menuY * H / 1000 - bh / 2;
-        if (g_anchor) {                                              // right of the victory points bar (centred on the screen)
-            int left = W / 2 + g_vpX * H / 1000;
+        int top = (g_anchor == 2 ? H - g_mapY * H / 1000 : g_menuY * H / 1000) - bh / 2;
+        if (g_anchor) {                                              // right of the VP bar (centred) or above the minimap
+            int left = g_anchor == 2 ? g_mapX * H / 1000 : W / 2 + g_vpX * H / 1000;
             SetRect(&box, left, top, left + bw, top + bh);
         } else {
             int right = W - g_menuX * H / 1000;
@@ -306,8 +311,8 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
         fmt = DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER;
         if (!ensure_box(dev, bw, bh)) box.right = box.left;          // no texture: text only
     } else if (g_style) {                                            // text only, next to the Menu button or the VP bar
-        int cy = g_menuY * H / 1000;
-        if (g_anchor) { int left = W / 2 + g_vpX * H / 1000; SetRect(&r, left, cy - px, left + W, cy + px); }
+        int cy = g_anchor == 2 ? H - g_mapY * H / 1000 : g_menuY * H / 1000;
+        if (g_anchor) { int left = g_anchor == 2 ? g_mapX * H / 1000 : W / 2 + g_vpX * H / 1000; SetRect(&r, left, cy - px, left + W, cy + px); }
         else { int right = W - g_menuX * H / 1000; SetRect(&r, right - W, cy - px, right, cy + px); }
         fmt = DT_SINGLELINE | DT_NOCLIP | (g_anchor ? DT_LEFT : DT_RIGHT) | DT_VCENTER;
     } else {
