@@ -12,6 +12,9 @@
 // game's own Caslon Antique New, read from its files at start (common/gamefont.h), else a Windows font (ID3DXFont);
 // Reset is hooked too, so the font lets go of the device on alt-tab / resolution change.
 // Read-only: nothing in the simulation changes, so no desync; only the player with the DLL sees the clock.
+//
+// Built two ways: MatchTimer.dll on its own, or with -DMT_EMBED inside LobbyStats.dll (one device hook for both: the
+// clock, the main menu tooltip and the ratings on the loading screen; settings in LobbyStats.ini, section [MatchTimer]).
 #include <windows.h>
 #include <psapi.h>
 #include <stdio.h>
@@ -352,8 +355,21 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
+#ifdef MT_EMBED
+// the host DLL (LobbyStats) draws its own things through the same hook: EndScene, and before/after a device Reset
+void (*mt_extra_draw)(IDirect3DDevice9 *);
+void (*mt_extra_lost)(IDirect3DDevice9 *);
+void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
+static int g_clockOff;                          // a stand-alone MatchTimer.dll draws the clock already
+int mt_loading(void) { return g_inMatch && !g_ticks; }   // SimulatePre came, no sim tick yet: the loading screen
+int mt_online(void) { return (session_flags() & ONLINE_MASK) != 0; }
+#endif
 static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
+#ifdef MT_EMBED
+    if (mt_extra_draw) mt_extra_draw(dev);
+    if (g_clockOff) return o_EndScene(dev);
+#endif
     InterlockedIncrement(&g_totalCalls); g_calls++;
     reload_ini(now);
     int vis = g_enabled && clock_visible();
@@ -381,7 +397,13 @@ static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
         g_lost = 1;
     }
+#ifdef MT_EMBED
+    if (mt_extra_lost) mt_extra_lost(dev);
+#endif
     HRESULT hr = o_Reset(dev, pp);
+#ifdef MT_EMBED
+    if (mt_extra_reset) mt_extra_reset(dev, hr);
+#endif
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
@@ -506,6 +528,16 @@ static int already_loaded(const char *name) {
     HANDLE m = CreateMutexA(NULL, FALSE, n);
     return m && GetLastError() == ERROR_ALREADY_EXISTS;
 }
+#ifdef MT_EMBED
+// called by the host DLL once: dir = its folder (with a trailing backslash), ini = its ini file
+void mt_start(const wchar_t *dir, const wchar_t *ini) {
+    _snwprintf(g_log, MAX_PATH, L"%lsMatchTimer.log", dir); lstrcpynW(g_ini, ini, MAX_PATH);
+    load_ini();
+    logmsg("MatchTimer v3 inside LobbyStats, clock %s", g_enabled ? "on" : "off ([MatchTimer] Enabled=0)");
+    if (already_loaded("MatchTimer")) { g_clockOff = 1; logmsg("a stand-alone MatchTimer.dll is active too: it draws the clock, not us"); }
+    CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));   // the device hook is needed for the rest even without the clock
+}
+#else
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
     DisableThreadLibraryCalls(h);
@@ -518,3 +550,4 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     return TRUE;
 }
+#endif

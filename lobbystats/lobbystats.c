@@ -10,6 +10,9 @@
 // A name is first shown without numbers; they appear on the next lobby update (join, ready,
 // race change) and immediately in later lobbies (disk cache next to the DLL).
 // Players are matched by SteamID64 from the slot data (name is only a fallback).
+// The loading screen of an online match gets a box with everyone's rating (the players of the last lobby, by team).
+// The match clock (matchtimer/matchtimer.c, built in with -DMT_EMBED) lives here too and owns the one Direct3D hook:
+// on the device the game itself creates, never a throwaway one.
 // It only reads the lobby: no kicking, no chat commands, no extra menus.
 //
 // Works only with DOW2.exe 3.19 (Steam): the prologue bytes are checked before installing.
@@ -262,6 +265,11 @@ static void decorate(GFxValue *args, unsigned count) {
         format_tip(g_tipBuf[i], name, e, wr, games);
         a[A_TOOLTIP].type = GFX_WSTRING; a[A_TOOLTIP].v.ws = g_tipBuf[i];
     }
+    {   // players of this lobby (observers not counted) for Relay.dll: its server keeps the match only if all of them come
+        int np = 0; char v[8];
+        for (int k = 0; k < g_nseen; k++) if (!g_seen[k].obs) np++;
+        wsprintfA(v, "%d", np); SetEnvironmentVariableA("DOW2_LOBBY_PLAYERS", v);
+    }
     {   // lobby roster changed - log who is there
         static unsigned long long lastSig; unsigned long long sig = nids * 1315423911ULL + g_nseen;
         for (int k = 0; k < g_nseen; k++) sig = sig * 31 + g_seen[k].id;
@@ -485,9 +493,6 @@ static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     return 1;
 }
 
-typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
-typedef HRESULT (WINAPI *Reset_t)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
-static EndScene_t o_EndScene; static Reset_t o_Reset;
 static ID3DXFont *g_font; static ID3DXSprite *g_sprite;
 static IDirect3DDevice9 *g_fontDev; static int g_fontPx, g_lost;
 static IDirect3DTexture9 *g_box; static IDirect3DDevice9 *g_boxDev; static int g_boxW, g_boxH;
@@ -642,59 +647,100 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
-static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
+// ---------- loading screen of an online match: everyone's rating, by team ----------
+// The players are the ones of the last lobby (PopulatePlayerList): team 1 holds the first half of the seats.
+static int g_loadOn = 0;                               // [LoadingScreen] Ratings=1 (off until it has been seen on a real loading screen)
+static void draw_loading(IDirect3DDevice9 *dev) {
+    typedef struct { wchar_t name[64]; int team, pos, known, rating, wr, games; } Row;
+    Row rows[16]; int n = 0, W, H;
+    if (!g_stats || g_lost || !on_back_buffer(dev, &W, &H)) return;
+    EnterCriticalSection(&g_lock);
+    int half = g_maxPlayers > 1 ? g_maxPlayers / 2 : 1;
+    for (int i = 0; i < g_nseen && n < 16; i++) {
+        Seen *sn = &g_seen[i];
+        if (sn->obs || sn->pos < 0) continue;
+        Row *r = &rows[n++]; memset(r, 0, sizeof *r);
+        wcsncpy(r->name, sn->name, 63); r->team = sn->pos >= half; r->pos = sn->pos;
+        Entry *e = find(sn->key);
+        if (e && e->known) { r->known = 1; r->rating = e->rating; r->games = e->wins + e->losses; r->wr = r->games ? (e->wins * 100 + r->games / 2) / r->games : 0; }
+    }
+    LeaveCriticalSection(&g_lock);
+    if (n < 2) return;
+    for (int i = 1; i < n; i++)                                      // team 1 first, by seat
+        for (int j = i; j > 0 && (rows[j].team * 100 + rows[j].pos) < (rows[j - 1].team * 100 + rows[j - 1].pos); j--) { Row t = rows[j]; rows[j] = rows[j - 1]; rows[j - 1] = t; }
+    float k = H / 1440.0f;
+    int px = (int)(22 * k + 0.5f); if (px < 10) px = 10;
+    if (!ensure_font(dev, px)) return;
+    // columns: name, rating, win rate, games; a header line and a gap between the teams
+    static const wchar_t *head[4] = { L"Relic", L"Rating", L"Win rate", L"Games" };
+    wchar_t cell[16][4][64]; int cw[4] = {0, 0, 0, 0};
+    RECT m;
+    for (int c = 0; c < 4; c++) { SetRect(&m, 0, 0, 0, 0); g_font->lpVtbl->DrawTextW(g_font, NULL, head[c], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0); cw[c] = m.right; }
+    for (int i = 0; i < n; i++) {
+        wcscpy(cell[i][0], rows[i].name);
+        if (rows[i].known) {
+            _snwprintf(cell[i][1], 63, L"%d", rows[i].rating); _snwprintf(cell[i][2], 63, L"%d%%", rows[i].wr); _snwprintf(cell[i][3], 63, L"%d", rows[i].games);
+        } else { wcscpy(cell[i][1], L"—"); cell[i][2][0] = cell[i][3][0] = 0; }
+        for (int c = 0; c < 4; c++) {
+            cell[i][c][63] = 0; SetRect(&m, 0, 0, 0, 0);
+            g_font->lpVtbl->DrawTextW(g_font, NULL, cell[i][c], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0);
+            if (m.right > cw[c]) cw[c] = m.right;
+        }
+    }
+    int padX = (int)(22 * k), padT = (int)(20 * k), padB = (int)(18 * k), pitch = (int)(30 * k + 0.5f), gap = (int)(30 * k), teamGap = (int)(12 * k);
+    int split = 0; for (int i = 1; i < n; i++) if (rows[i].team != rows[i - 1].team) split = i;
+    int bw = padX * 2 + cw[0] + cw[1] + cw[2] + cw[3] + gap * 3;
+    int bh = padT + pitch * (n + 1) + (split ? teamGap : 0) + padB - (pitch - px);
+    RECT box; box.left = (W - bw) / 2; box.top = 30 * H / 1000; box.right = box.left + bw; box.bottom = box.top + bh;
+    int haveBox = ensure_box(dev, bw, bh, k < 1 ? 1 : k);
+    int x[4]; x[0] = box.left + padX; x[1] = x[0] + cw[0] + gap; x[2] = x[1] + cw[1] + gap; x[3] = x[2] + cw[2] + gap;
+    D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
+    int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
+    IDirect3DDevice9_SetViewport(dev, &full);
+    if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {
+        if (haveBox) { float pos[3] = { (float)box.left, (float)box.top, 0.0f }; g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF); }
+        for (int i = -1; i < n; i++) {                               // -1: the header line
+            int y = box.top + padT + (i + 1) * pitch + (split && i >= split ? teamGap : 0);
+            for (int c = 0; c < 4; c++) {
+                const wchar_t *t = i < 0 ? head[c] : cell[i][c];
+                DWORD col = i < 0 ? 0xFF8E8C88 : c == 1 ? 0xFFE8C66A : 0xFFD2D2D4;   // the rating in the game's gold
+                // numbers right-aligned in their column, the name left
+                RECT r = { x[c], y, x[c] + cw[c], y + px }, sh = r; OffsetRect(&sh, 1, 1);
+                DWORD f = DT_SINGLELINE | DT_NOCLIP | (c ? DT_RIGHT : DT_LEFT);
+                g_font->lpVtbl->DrawTextW(g_font, g_sprite, t, -1, &sh, f, 0xA0000000);
+                g_font->lpVtbl->DrawTextW(g_font, g_sprite, t, -1, &r, f, col);
+            }
+        }
+        g_sprite->lpVtbl->End(g_sprite);
+    }
+    if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
+}
+
+// ---------- the one Direct3D hook is MatchTimer's (matchtimer.c, MT_EMBED): we draw through its callbacks ----------
+extern void (*mt_extra_draw)(IDirect3DDevice9 *);
+extern void (*mt_extra_lost)(IDirect3DDevice9 *);
+extern void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
+int mt_loading(void); int mt_online(void); void mt_start(const wchar_t *dir, const wchar_t *ini);
+static volatile int g_d3dReady;                     // d3dx and the game font loaded (tip_worker)
+static void ls_draw(IDirect3DDevice9 *dev) {
+    if (!g_d3dReady) return;
     if (g_front) draw_tip(dev);
-    return o_EndScene(dev);
+    else if (g_loadOn && mt_loading() && mt_online()) draw_loading(dev);
 }
 // ID3DXFont/ID3DXSprite hold state blocks and video memory: they must let go before Reset or Reset fails
-static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp) {
+static void ls_lost(IDirect3DDevice9 *dev) {
     if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
         if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
         g_lost = 1;
     }
-    HRESULT hr = o_Reset(dev, pp);
+}
+static void ls_reset(IDirect3DDevice9 *dev, HRESULT hr) {
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
         g_lost = 0;
     }
-    return hr;
-}
-static void *vt_hook(void **vtbl, int index, void *fn) {
-    DWORD old;
-    VirtualProtect(&vtbl[index], sizeof(void *), PAGE_EXECUTE_READWRITE, &old);
-    void *prev = vtbl[index];
-    vtbl[index] = fn;
-    VirtualProtect(&vtbl[index], sizeof(void *), old, &old);
-    return prev;
-}
-// create a throwaway device to reach the device vtable (shared with the game's device), then hook it
-static int install_d3d_hooks(void) {
-    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
-    IDirect3D9 *(WINAPI *pCreate)(UINT) = d3d9 ? (void *)GetProcAddress(d3d9, "Direct3DCreate9") : NULL;
-    if (!pCreate) return 0;
-    IDirect3D9 *d3d = pCreate(D3D_SDK_VERSION);
-    if (!d3d) return 0;
-    WNDCLASSA wc = {0}; wc.lpfnWndProc = DefWindowProcA; wc.hInstance = GetModuleHandleA(NULL); wc.lpszClassName = "lsprobe";
-    RegisterClassA(&wc);
-    HWND hwnd = CreateWindowA("lsprobe", "ls", WS_OVERLAPPED, 0, 0, 8, 8, NULL, NULL, wc.hInstance, NULL);
-    D3DPRESENT_PARAMETERS pp = {0};
-    pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD; pp.BackBufferFormat = D3DFMT_UNKNOWN; pp.hDeviceWindow = hwnd;
-    IDirect3DDevice9 *dev = NULL;
-    HRESULT hr = IDirect3D9_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_NOWINDOWCHANGES, &pp, &dev);
-    if (FAILED(hr) || !dev) {
-        logmsg("tooltip: temp CreateDevice failed hr=0x%08lx", (unsigned long)hr);
-        IDirect3D9_Release(d3d); if (hwnd) DestroyWindow(hwnd); return 0;
-    }
-    void **vtbl = *(void ***)dev;
-    o_Reset    = (Reset_t)    vt_hook(vtbl, 16, (void *)hk_Reset);
-    o_EndScene = (EndScene_t) vt_hook(vtbl, 42, (void *)hk_EndScene);
-    IDirect3DDevice9_Release(dev);
-    IDirect3D9_Release(d3d);
-    if (hwnd) DestroyWindow(hwnd);
-    return 1;
 }
 static DWORD WINAPI tip_worker(LPVOID _) {
     gf_load(&g_tipFont, "Arial Unicode MS", NULL);                  // from the game's files; on failure Windows Arial
@@ -706,12 +752,12 @@ static DWORD WINAPI tip_worker(LPVOID _) {
         if (p_D3DXCreateFontA && p_D3DXCreateSprite) break;
     }
     if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("tooltip: no d3dx9_*.dll, no main menu tooltip"); return 0; }
-    for (int i = 0, pre = 0; i < 120; i++) {
-        if (!pre) pre = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre);
-        if (pre && GetModuleHandleA("d3d9.dll") && install_d3d_hooks()) { logmsg("main menu tooltip hooks installed"); return 0; }
+    g_d3dReady = 1;
+    for (int i = 0; i < 120; i++) {
+        if (iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre)) { logmsg("main menu tooltip and loading screen ratings ready"); return 0; }
         Sleep(1000);
     }
-    logmsg("tooltip: hooks not installed (no World::SimulatePre import or no d3d9.dll), no main menu tooltip");
+    logmsg("tooltip: no World::SimulatePre import, no main menu tooltip");
     return 0;
 }
 
@@ -734,14 +780,17 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_tipDX   = GetPrivateProfileIntW(L"MenuTooltip", L"DX", g_tipDX, ini);
     g_tipDY   = GetPrivateProfileIntW(L"MenuTooltip", L"DY", g_tipDY, ini);
     g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
+    g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 0, ini);
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.5%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.8.0%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     if (g_stats) CloseHandle(CreateThread(NULL, 0, tip_worker, NULL, 0, NULL));
+    mt_extra_draw = ls_draw; mt_extra_lost = ls_lost; mt_extra_reset = ls_reset;
+    mt_start(g_dir, ini);                            // the clock and the one device hook
     return TRUE;
 }
 

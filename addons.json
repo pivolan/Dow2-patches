@@ -1,7 +1,19 @@
 {
   "_readme": "What the launcher gives players. Raise an add-on's version and merge to main: the server builds and publishes it within minutes. See README, Publishing.",
-  "lobbystats": { "version": "0.7.0", "dll": "LobbyStats.dll" },
-  "matchtimer": { "version": "off", "dll": "MatchTimer.dll" },
-  "obsfix": { "version": "1", "dll": "ObsFix.dll" },
-  "frameprobe": { "version": "off", "dll": "FrameProbe.dll" }
+  "lobbystats": {
+    "version": "0.8.0",
+    "dll": "LobbyStats.dll"
+  },
+  "matchtimer": {
+    "version": "off",
+    "dll": "MatchTimer.dll"
+  },
+  "obsfix": {
+    "version": "1",
+    "dll": "ObsFix.dll"
+  },
+  "frameprobe": {
+    "version": "off",
+    "dll": "FrameProbe.dll"
+  }
 }
