@@ -365,14 +365,14 @@ static void demo_text(ID3DXFont *f, const char *t, RECT r, DWORD fmt, DWORD colo
         if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, outline); else gf_draw(g_sprite, t, &q, fmt, outline);
     }
     RECT q = { r.left + o, r.top + o, r.right + o, r.bottom + o };
-    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0xB0000000); else gf_draw(g_sprite, t, &q, fmt, 0xB0000000);   // drop shadow
+    if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &q, fmt, 0x80000000); else gf_draw(g_sprite, t, &q, fmt, 0x80000000);   // drop shadow
     if (f) f->lpVtbl->DrawTextA(f, g_sprite, t, -1, &r, fmt, color); else gf_draw(g_sprite, t, &r, fmt, color);
 }
 static void draw_demo(IDirect3DDevice9 *dev) {
     int W, H;
     if (!on_back_buffer(dev, &W, &H)) return;
     g_bbCalls++;
-    int pxBox = 20 * H / 1080, pxCamp = 22 * H / 1080;
+    int pxBox = 20 * H / 1080, pxCamp = 26 * H / 1080;
     if (g_lost || !ensure_font(dev, pxBox)) return;                  // also makes the sprite
     int game = !strcmp(g_campFace, GAME_FONT) && gf_ready(dev, pxCamp);    // the game's font, else Book Antiqua
     ID3DXFont *fb = demo_font(dev, 0, "Arial", pxBox), *fc = game ? NULL : demo_font(dev, 1, !strcmp(g_campFace, GAME_FONT) ? "Book Antiqua" : g_campFace, pxCamp);
@@ -386,7 +386,7 @@ static void draw_demo(IDirect3DDevice9 *dev) {
     fb->lpVtbl->DrawTextA(fb, NULL, z, -1, &m, DT_SINGLELINE | DT_CALCRECT, 0);
     int bh = 26 * H / 1000, pad = bh * 4 / 10, bw = m.right - m.left + 2 * pad, gap = 10 * H / 1000;
     if (!ensure_box(dev, bw, bh)) return;
-    int oc = pxCamp >= 28 ? 2 : 1, ob = pxBox >= 28 ? 2 : 1;
+    int oc = 1, ob = pxBox >= 28 ? 2 : 1;                              // a thin outline, as on the campaign timers
     RECT box[3], camp[2], ba;
     int top = 18 * H / 1000 - bh / 2, right = W - g_menuX * H / 1000;     // next to the Menu button
     SetRect(&box[0], right - bw, top, right, top + bh);
@@ -412,9 +412,9 @@ static void draw_demo(IDirect3DDevice9 *dev) {
         }
         for (int k = 0; k < 3; k++) demo_text(fb, t, box[k], DT_SINGLELINE | DT_NOCLIP | DT_CENTER | DT_VCENTER, 0xFFF0EEE4, 0, ob);
         for (int k = 0; k < 2; k++)
-            demo_text(fc, t, camp[k], DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | (k ? DT_LEFT : DT_RIGHT), 0xFFFFF8F0, 0xFF000000, oc);
-        demo_text(fc, t, gc, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xFF000000, oc);
-        if (fa) demo_text(fa, t, ba, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xFF000000, oc);
+            demo_text(fc, t, camp[k], DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | (k ? DT_LEFT : DT_RIGHT), 0xFFFFF8F0, 0xA0000000, oc);
+        demo_text(fc, t, gc, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xA0000000, oc);
+        if (fa) demo_text(fa, t, ba, DT_SINGLELINE | DT_NOCLIP | DT_VCENTER | DT_LEFT, 0xFFFFF8F0, 0xA0000000, oc);
         g_sprite->lpVtbl->End(g_sprite);
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
