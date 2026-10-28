@@ -1,13 +1,13 @@
-// MatchTimer.dll - match clock (MM:SS, real time) in Dawn of War II: Retribution 3.19 (Elite).
+// MatchTimer.dll - match clock (MM:SS of game time) in Dawn of War II: Retribution 3.19 (Elite).
 //
-// The clock starts with the first simulation tick of a match and then runs on the PC's clock, so a lag
-// ("waiting for players") doesn't stop it. Shown in every game, offline vs AI and replays included; OnlineOnly=1
-// keeps it to live multiplayer (the session is online only there). Never in menus, on the loading screen or on
-// the post-game screen (no sim ticks there).
-// Sim ticks: World::Simulate is hooked through the DOW2.exe import table. Not World::SimulatePre / SimulatePost:
-// DOW2.exe calls those through the import table only once per match, at its start and its end (seen with SimProbe).
-// A new World object, or no tick for NewMatchGapSec, starts a new match. While loading, the game may run a few
-// ticks and then wait for the other players: a pause within the first EARLY_TICKS ticks restarts the clock.
+// Game time: the clock runs while the simulation ticks and stands still while it doesn't (pause, offline game
+// minimized, "waiting for players"), so every player of a match sees the same time, the replay too. A minimized
+// online match keeps ticking, so its clock keeps running. Shown in every game, offline vs AI and replays included;
+// OnlineOnly=1 keeps it to live multiplayer (the session is online only there).
+// Hooks through the DOW2.exe import table (SimEngine.dll), seen with SimProbe:
+//   World::SimulatePre  - once per match, at its start (still on the loading screen): the clock is reset;
+//   World::Simulate     - every sim tick: the time between two ticks is added, a gap over PAUSE_MS is not;
+//   World::SimulatePost - once per match, at its end (victory, defeat or leaving through the menu): clock hidden.
 // Drawing: IDirect3DDevice9::EndScene through the device vtable + ID3DXFont, like CGNumbers (DXVK-safe);
 // Reset is hooked too, so the font lets go of the device on alt-tab / resolution change.
 // Read-only: nothing in the simulation changes, so no desync; only the player with the DLL sees the clock.
@@ -20,11 +20,12 @@
 #define COBJMACROS
 #include <d3d9.h>
 
-#define IAT_SIM         0x00F885E4   // World::Simulate (__thiscall, ecx = World), imported from SimEngine.dll, every sim tick
+#define IAT_SIM_PRE     0x00F88154   // World::SimulatePre  (__thiscall, ecx = World), match start
+#define IAT_SIM         0x00F885E4   // World::Simulate     (__thiscall, ecx = World), every sim tick (~8 per second)
+#define IAT_SIM_POST    0x00F88100   // World::SimulatePost (__thiscall, ecx = World), match end
 #define G_SESSION       0x01335678   // *(*G_SESSION + 4) & 0x558: the session is online (live MP), see docs/OBSERVER_LAG.md
 #define ONLINE_MASK     0x558
-#define EARLY_TICKS     16           // ~2 s of simulation: a pause before that is the loading screen, not a lag
-#define EARLY_PAUSE_MS  1000
+#define PAUSE_MS        1000         // a longer gap between two ticks is a pause or a lag: not game time
 
 static wchar_t g_log[MAX_PATH], g_ini[MAX_PATH];
 static void logmsg(const char *fmt, ...) {
@@ -35,7 +36,7 @@ static void logmsg(const char *fmt, ...) {
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
 static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 22, g_onlineOnly = 0;
-static DWORD g_color = 0xFFFFFFFF, g_outline = 0xFF000000, g_hideMs = 5000, g_newMatchMs = 60000;
+static DWORD g_color = 0xFFFFFFFF, g_outline = 0xFF000000;
 // Style=1: a panel docked to the right of the victory points bar. The bar sits at the top centre and scales with
 // the screen height, so the panel is placed from the screen centre in 1/1000 of the screen height.
 static int g_style = 1, g_bold = 0, g_panelX = 119, g_panelY = 0, g_panelW = 75, g_panelH = 34;
@@ -59,8 +60,6 @@ static void load_ini(void) {
     g_align      = ini_int(L"Align", 1, 0, 2);
     g_size       = ini_int(L"Size", 22, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_hideMs     = ini_int(L"HideAfterSec", 5, 1, 600) * 1000;
-    g_newMatchMs = ini_int(L"NewMatchGapSec", 60, 5, 3600) * 1000;
     g_color      = ini_color(L"Color", L"FFFFFF");
     g_outline    = ini_color(L"Outline", L"000000");
     g_style      = ini_int(L"Style", 1, 0, 1);
@@ -87,33 +86,40 @@ static void reload_ini(DWORD now) {
 
 // ---------- match clock: sim ticks (sim thread) ----------
 typedef void (__fastcall *ThisFn)(void *, void *);
-static ThisFn o_sim;
+static ThisFn o_pre, o_sim, o_post;
 static void *volatile g_world;                  // World of the current match
-static volatile DWORD g_start, g_lastTick;      // GetTickCount() at the match start and at the last sim tick
-static volatile LONG g_ticks;                   // sim ticks since g_start
+static volatile int g_inMatch;                  // between SimulatePre and SimulatePost
+static volatile DWORD g_play, g_lastTick;       // game time of the match in ms, GetTickCount() at the last sim tick
+static volatile LONG g_ticks;                   // sim ticks in this match
 
 static DWORD session_flags(void) {
     DWORD *g = (DWORD *)G_SESSION;
     if (IsBadReadPtr(g, 4) || !*g || IsBadReadPtr((void *)(*g + 4), 4)) return 0;
     return *(DWORD *)(*g + 4);
 }
+static void match_start(void *world, const char *why) {
+    logmsg("match start (%s): World %p, previous %p, session flags %lX", why, world, g_world, session_flags());
+    g_world = world; g_play = 0; g_lastTick = 0; g_ticks = 0; g_inMatch = 1;
+}
+static void __fastcall hk_pre(void *self, void *edx) {
+    match_start(self, "SimulatePre");
+    o_pre(self, edx);
+}
+static void __fastcall hk_post(void *self, void *edx) {
+    logmsg("match end: %lu:%02lu of game time, %ld ticks", g_play / 60000, g_play / 1000 % 60, g_ticks);
+    g_inMatch = 0;
+    o_post(self, edx);
+}
 static void __fastcall hk_sim(void *self, void *edx) {
     DWORD now = GetTickCount(), gap = now - g_lastTick;
-    if (self != g_world || !g_lastTick || gap > g_newMatchMs) {
-        logmsg("match start: World %p (previous %p, last tick %lu s ago), session flags %lX",
-               self, g_world, g_lastTick ? gap / 1000 : 0, session_flags());
-        g_world = self; g_start = now; g_ticks = 0;
-    } else if (g_ticks < EARLY_TICKS && gap > EARLY_PAUSE_MS) {
-        logmsg("clock restarted: %lu ms pause after tick %ld (loading screen)", gap, g_ticks);
-        g_start = now; g_ticks = 0;
-    } else if (gap > 3000)
-        logmsg("sim stood still for %lu s (lag?), the clock kept running", gap / 1000);
+    if (self != g_world) match_start(self, "first tick of a new World");    // e.g. the DLL came in mid-match
+    else if (g_lastTick && gap <= PAUSE_MS) g_play += gap;
+    else if (g_lastTick && gap > 3000) logmsg("sim stood still for %lu s (pause or lag), the clock waited", gap / 1000);
     g_lastTick = now; g_ticks++;
     o_sim(self, edx);
 }
-static int clock_visible(DWORD now) {
-    if (!g_lastTick || g_ticks < EARLY_TICKS) return 0;            // no match yet, or still on the loading screen
-    if (now - g_lastTick > g_hideMs) return 0;                      // sim stopped: menu, post-game screen or a long lag
+static int clock_visible(void) {
+    if (!g_inMatch || !g_ticks) return 0;                            // menus, loading screen, post-game screen
     return !g_onlineOnly || (session_flags() & ONLINE_MASK);        // replays and offline games have no online session
 }
 
@@ -214,7 +220,7 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     g_bbCalls++;
     int px = g_size * H / 1080; if (px < 10) px = 10;               // Size is for 1080p, scaled with the screen height
     if (g_lost || !ensure_font(dev, px)) return;
-    DWORD ms = now - g_start, s = (LONG)ms < 0 ? 0 : ms / 1000; char t[16];   // the sim thread may have just moved g_start
+    DWORD s = g_play / 1000; char t[16];
 
     if (s >= 3600) wsprintfA(t, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
     else wsprintfA(t, "%02lu:%02lu", s / 60, s % 60);
@@ -265,13 +271,13 @@ static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
     InterlockedIncrement(&g_totalCalls); g_calls++;
     reload_ini(now);
-    int vis = g_enabled && clock_visible(now);
+    int vis = g_enabled && clock_visible();
     if (vis != g_shown) {
         g_shown = vis;
-        DWORD run = g_lastTick - g_start;
+        DWORD run = g_play;
         if (vis) { logmsg("clock shown (session flags %lX)", session_flags()); g_shownAt = now; g_calls = g_bbCalls = 0; g_diagDone = 0; }
-        else logmsg("clock hidden: last sim tick %lu s ago, match %lu:%02lu, %ld ticks (%.1f per second)",
-                    (now - g_lastTick) / 1000, run / 60000, run / 1000 % 60, g_ticks, run ? g_ticks * 1000.0 / run : 0.0);
+        else logmsg("clock hidden: match %lu:%02lu of game time, %ld ticks (%.1f per second)",
+                    run / 60000, run / 1000 % 60, g_ticks, run ? g_ticks * 1000.0 / run : 0.0);
     }
     if (vis) {
         draw(dev, now);
@@ -349,7 +355,12 @@ static DWORD WINAPI worker(LPVOID _) {
     if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("no d3dx9_*.dll with D3DXCreateFontA - the clock can't be drawn"); return 0; }
     int sim = 0;
     for (int i = 0; i < 120; i++) {
-        if (!sim && (sim = iat_hook(IAT_SIM, "SimEngine.dll", hk_sim, (void **)&o_sim))) logmsg("sim tick hook installed");
+        if (!sim && (sim = iat_hook(IAT_SIM, "SimEngine.dll", hk_sim, (void **)&o_sim))) {
+            int pre = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre);
+            int post = iat_hook(IAT_SIM_POST, "SimEngine.dll", hk_post, (void **)&o_post);
+            logmsg("sim hooks installed: tick yes, match start %s, match end %s%s", pre ? "yes" : "NO", post ? "yes" : "NO",
+                   post ? "" : " - the clock will stay on the post-game screen");
+        }
         if (sim && GetModuleHandleA("d3d9.dll") && install_d3d_hooks()) {
             logmsg("hooks installed after %d s", i);
             Sleep(60000);                                            // menus draw every frame too, so EndScene must have run by now
