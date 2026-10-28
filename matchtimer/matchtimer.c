@@ -35,8 +35,8 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 16, g_onlineOnly = 0;
-static DWORD g_color = 0xFFC8D2D4, g_outline = 0xFF000000;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineOnly = 0;
+static DWORD g_color = 0xFFC8D2D4, g_outline = 0;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 static int g_style = 1, g_bold = 0, g_menuX = 131, g_menuY = 17;
@@ -44,7 +44,7 @@ static char g_face[64] = "Book Antiqua";
 static FILETIME g_iniTime;
 static DWORD ini_color(const wchar_t *key, const wchar_t *def) {
     wchar_t s[16]; GetPrivateProfileStringW(L"MatchTimer", key, def, s, 16, g_ini);
-    return 0xFF000000 | (wcstoul(s, NULL, 16) & 0xFFFFFF);
+    return *s ? 0xFF000000 | (wcstoul(s, NULL, 16) & 0xFFFFFF) : 0;  // empty = none (alpha 0)
 }
 static int ini_int(const wchar_t *key, int def, int lo, int hi) {
     int v = GetPrivateProfileIntW(L"MatchTimer", key, def, g_ini);
@@ -57,10 +57,10 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 16, 8, 200);
+    g_size       = ini_int(L"Size", 20, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
     g_color      = ini_color(L"Color", L"C8D2D4");
-    g_outline    = ini_color(L"Outline", L"000000");
+    g_outline    = ini_color(L"Outline", L"");
     g_style      = ini_int(L"Style", 1, 0, 1);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
     g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
@@ -182,7 +182,7 @@ static volatile LONG g_totalCalls; static LONG g_calls, g_bbCalls;   // EndScene
 
 static int ensure_font(IDirect3DDevice9 *dev, int px) {
     static char face[64]; static int weight;
-    // Style 0 keeps the old look: bold Arial with an outline
+    // Style 0 keeps the old look: bold Arial
     const char *want = g_style ? g_face : "Arial"; int w = g_style && !g_bold ? FW_NORMAL : FW_BOLD;
     if (g_fontDev == dev && g_fontPx == px && weight == w && !strcmp(face, want))
         return g_font && g_sprite;                                       // made already (or failed: no retry every frame)
@@ -234,10 +234,10 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
     IDirect3DDevice9_SetViewport(dev, &full);                        // the game may have left a smaller viewport
     if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND | D3DXSPRITE_SORT_TEXTURE))) {
-        // outline, so the clock reads on any terrain; Style=1 makes it a half-transparent halo, like the game's own text
+        // optional outline (Outline= empty: none); Style=1 makes it a half-transparent halo
         DWORD halo = g_style ? (g_outline & 0xFFFFFF) | 0x90000000 : g_outline;
         static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; (g_outline >> 24) && i < 8; i++) {
             RECT q = { r.left + dx[i] * o, r.top + dy[i] * o, r.right + dx[i] * o, r.bottom + dy[i] * o };
             g_font->lpVtbl->DrawTextA(g_font, g_sprite, t, -1, &q, fmt, halo);
         }
