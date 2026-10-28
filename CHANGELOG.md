@@ -6,8 +6,7 @@ The version of the set lives only in `VERSION`; each DLL still writes its own ve
 
 ## 0.1.2 — 2026-10-28
 - LobbyStats v0.7.3: own rating after the name in the main menu and the stats tooltip on hover over it; the stats host
-  is baked in by default, so CI builds
-  show numbers again; `[Debug] LogInvoke=1` logs the Flash calls of the UI.
+  is baked in by default, so CI builds show numbers again; `[Debug] LogInvoke=1` logs the Flash calls of the UI.
 
 ## 0.1.1 — 2026-10-28
 - MatchTimer v1: match clock (MM:SS of game time, pauses not counted) in a box next to the Menu button, experimental.
