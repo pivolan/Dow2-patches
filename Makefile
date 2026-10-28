@@ -14,7 +14,7 @@ $(OUT):
 $(OUT)/ObsFix.dll: obsfix/obsfix.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
 $(OUT)/LobbyStats.dll: lobbystats/lobbystats.c | $(OUT)
-	$(CC) $(CFLAGS) $(STATS) -shared -o $@ $< -lwinhttp -lpsapi -static-libgcc -Wl,--kill-at
+	$(CC) $(CFLAGS) $(STATS) -shared -o $@ $< -lwinhttp -lpsapi -lgdi32 -static-libgcc -Wl,--kill-at
 $(OUT)/winmm.dll: vanilla-loader/winmm_proxy.c vanilla-loader/winmm.def | $(OUT)
 	$(CC) -O2 -shared -o $@ $^ -static-libgcc
 $(OUT)/FrameProbe.dll: frameprobe/frameprobe.c | $(OUT)
