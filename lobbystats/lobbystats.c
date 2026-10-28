@@ -359,8 +359,22 @@ static void probe(void *movie, const char *method, GFxValue *args, unsigned coun
 // main menu: own name in the top right corner, Receive_SetGamerTag(wstr name, num). Looked up by name, as the lobby
 // does for the own slot. Numbers come from the cache; a name not cached yet is fetched and shows up the next time.
 static wchar_t g_tagBuf[128];
-static volatile int g_front;          // the menu name bar is on screen: SetGamerTag seen and no match since
+static volatile int g_front;          // the main menu (with the name bar) is the current screen
 static wchar_t g_menuName[64];        // own name from SetGamerTag (under g_lock), for the main menu tooltip
+// menu tooltip placement, [MenuTooltip] in the ini, in 1/1000 of the screen height: its right edge and top relative
+// to the cursor (where the game's own "Currently logged in player" appears, which it must cover) and its least width
+static int g_tipDX = 0, g_tipDY = 14, g_tipMinW = 270;
+// front-end screens, as the screen manager movie gets them: ActivateFirstScreen(swf) starts the stack,
+// TransitionForward(swf) pushes, TransitionBackward pops. The name bar belongs to main_menu.swf only.
+static char g_screen[8][64]; static int g_nscreen;
+static void screen_event(const char *method, GFxValue *args, unsigned count) {
+    const char *swf = count >= 1 && args[0].type == GFX_STRING && args[0].v.s ? args[0].v.s : NULL;
+    if (!strcmp(method, "Receive_ActivateFirstScreen")) g_nscreen = 0;
+    if (!strcmp(method, "Receive_TransitionBackward")) { if (g_nscreen > 1) g_nscreen--; }
+    else if (swf && g_nscreen < 8) { lstrcpynA(g_screen[g_nscreen++], swf, 64); }
+    g_front = g_nscreen && !strcmp(g_screen[g_nscreen - 1], "main_menu.swf");
+    logmsg("screen: %s(%s) -> %s, menu tooltip %s", method + 8, swf ? swf : "", g_nscreen ? g_screen[g_nscreen - 1] : "?", g_front ? "on" : "off");
+}
 static void decorate_gamertag(GFxValue *args) {
     if (args[0].type != GFX_WSTRING || !args[0].v.ws || !args[0].v.ws[0] || args[0].v.ws == g_tagBuf) return;
     const wchar_t *name = args[0].v.ws; wchar_t key[64]; wcsncpy(key, name, 63); key[63] = 0;
@@ -373,7 +387,8 @@ static void decorate_gamertag(GFxValue *args) {
         if (!dup && g_npending < 16) { wcsncpy(g_pending[g_npending++], key, 63); want = 1; }
         if (!e) { e = find_or_add(key); e->fetched = 0; }
     }
-    wcscpy(g_menuName, key); g_front = 1;
+    wcscpy(g_menuName, key);
+    if (!g_nscreen) g_front = 1;                     // back from a match: the menu may come without ActivateFirstScreen
     if (e->known && g_stats && g_showInName) {
         _snwprintf(g_tagBuf, 127, L"%ls  [%d]", name, e->rating); g_tagBuf[127] = 0;
         args[0].v.ws = g_tagBuf;
@@ -386,6 +401,9 @@ static char __fastcall hook(void *self, void *edx, const char *method, int flags
     if (g_probe && method) probe(self, method, args, count);
     if (method && args && count >= 1 && !strcmp(method, "Receive_SetGamerTag") && !IsBadReadPtr(args, sizeof(GFxValue)))
         decorate_gamertag(args);
+    if (method && (!strcmp(method, "Receive_ActivateFirstScreen") || !strcmp(method, "Receive_TransitionForward") ||
+                   !strcmp(method, "Receive_TransitionBackward")) && (!count || (args && !IsBadReadPtr(args, sizeof(GFxValue)))))
+        screen_event(method, args, count);
     if (method && args && !strcmp(method, "Receive_PopulatePlayerList") && count < 4096 && !IsBadReadPtr(args, count * sizeof(GFxValue)))
         decorate(args, count);
     if (method && args && count >= 1 && !strcmp(method, "Receive_SetMaxPlayers") && !IsBadReadPtr(args, sizeof(GFxValue)) && args[0].type == GFX_NUMBER)
@@ -447,7 +465,7 @@ static D3DXCreateSprite_t p_D3DXCreateSprite;
 
 typedef void (__fastcall *ThisFn)(void *, void *);
 static ThisFn o_pre;
-static void __fastcall hk_pre(void *self, void *edx) { g_front = 0; o_pre(self, edx); }
+static void __fastcall hk_pre(void *self, void *edx) { g_front = 0; g_nscreen = 0; o_pre(self, edx); }
 // slot already hooked by another DLL (MatchTimer, FrameProbe) - chain onto it if it points to executable code
 static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     HMODULE m = GetModuleHandleA(dll); MODULEINFO mi;
@@ -483,23 +501,21 @@ static int ensure_font(IDirect3DDevice9 *dev, int px) {
     if (FAILED(hs)) g_sprite = NULL;
     return g_font && g_sprite;
 }
-// box like the game's own (the "Fog of War Off" box of the replay panel): dark frame with cut corners, steel line,
-// slate-blue fill. k = line thickness scale (1 at 1440p).
+// box like the game's own tooltip (the lobby slot tooltip at 2560x1440): a light rim, a dark bevel fading in,
+// opaque dark grey fill, slightly rounded corners. k = scale (1 at 1440p).
 static DWORD box_pixel(int x, int y, int w, int h, float k) {
-    float c = 5 * k, px = x + 0.5f, py = y + 0.5f, R = 0.7071f;
+    float c = 2 * k, px = x + 0.5f, py = y + 0.5f, R = 0.7071f;
     float d = px; if (py < d) d = py; if (w - px < d) d = w - px; if (h - py < d) d = h - py;
     float e[4] = { (px + py - c) * R, (w - px + py - c) * R, (px + h - py - c) * R, (w - px + h - py - c) * R };
     for (int i = 0; i < 4; i++) if (e[i] < d) d = e[i];
     if (d <= 0) return 0;
     DWORD rgb;
-    if (d < 1) rgb = 0x5A6A6C;
-    else if (d < 3.5f * k) rgb = 0x0E1D29;
-    else if (d < 4.5f * k) rgb = 0x48606E;
-    else {
-        float t = py / h; rgb = 0;
+    if (d < 1.5f * k) rgb = 0x646263;                                  // rim
+    else if (d < 5.5f * k) {                                           // bevel: 4D4B4C -> 2A2A2A
+        float t = (d - 1.5f * k) / (4 * k); rgb = 0;
         for (int s = 0; s < 24; s += 8)
-            rgb |= (DWORD)(((0x2D4556 >> s) & 255) + (((int)((0x22384A >> s) & 255) - (int)((0x2D4556 >> s) & 255)) * t)) << s;
-    }
+            rgb |= (DWORD)(((0x4D4B4C >> s) & 255) + (((int)((0x2A2A2A >> s) & 255) - (int)((0x4D4B4C >> s) & 255)) * t)) << s;
+    } else rgb = 0x272729;                                             // fill
     return (d < 1 ? (DWORD)(d * 255) : 255) << 24 | rgb;
 }
 static int ensure_box(IDirect3DDevice9 *dev, int w, int h, float k) {
@@ -539,30 +555,65 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     int L = W - 533 * H / 1000, R = W - 142 * H / 1000, T = 20 * H / 1000, B = 70 * H / 1000;
     if (mx < L || mx > R || my < T || my > B) return;
     tip[0] = 0;                                                      // numbers fetched after SetGamerTag count too
+    wchar_t name[64], shown[128];
     EnterCriticalSection(&g_lock);
     Entry *e = g_menuName[0] ? find(g_menuName) : NULL;
     if (e && e->known) {
         int games = e->wins + e->losses, wr = games ? (e->wins * 100 + games / 2) / games : 0;
         format_tip(tip, NULL, e, wr, games);
+        wcscpy(name, g_menuName); _snwprintf(shown, 127, L"%ls  [%d]", g_menuName, e->rating); shown[127] = 0;
     }
     LeaveCriticalSection(&g_lock);
     if (!tip[0]) return;
-    int px = 18 * H / 1080; if (px < 10) px = 10;
+    {   // only over the "[1938]" part: the rest of the bar keeps the game's own tooltip. The name starts 496/1000 H
+        // from the right edge, in a font as wide as Book Antiqua at 30 px per 1440 (measured on "SirItos").
+        static HDC dc; static HFONT hf; static int fontH;
+        int fh = 30 * H / 1440;
+        if (!dc) dc = CreateCompatibleDC(NULL);
+        if (fh != fontH) {
+            if (hf) DeleteObject(hf);
+            hf = CreateFontW(-fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Book Antiqua");
+            SelectObject(dc, hf); fontH = fh;
+        }
+        SIZE a, b;
+        if (!dc || !hf || !GetTextExtentPoint32W(dc, name, wcslen(name), &a) || !GetTextExtentPoint32W(dc, shown, wcslen(shown), &b)) return;
+        int x0 = W - 496 * H / 1000, gap = 4 * H / 1440;
+        if (mx < x0 + a.cx + 2 * gap || mx > x0 + b.cx + gap) return;
+    }
+    // metrics of the lobby tooltip at 1440p: Arial in a 22 px cell, a line every 28 px, text 22 px from the left
+    // edge and its first cell 25 px from the top. Lines are drawn one by one to get the game's line spacing.
+    float k = H / 1440.0f;
+    int px = (int)(22 * k + 0.5f); if (px < 10) px = 10;
     if (!ensure_font(dev, px)) return;
-    RECT m = {0, 0, 0, 0};
-    g_font->lpVtbl->DrawTextW(g_font, NULL, tip, -1, &m, DT_CALCRECT | DT_LEFT, 0);
-    int pad = px * 7 / 10, bw = m.right - m.left + 2 * pad, bh = m.bottom - m.top + 2 * pad;
-    RECT box = { R - bw, B + 6 * H / 1000, R, B + 6 * H / 1000 + bh };
-    int haveBox = ensure_box(dev, bw, bh, H / 1440.0f < 1 ? 1 : H / 1440.0f);
-    RECT r = { box.left + pad, box.top + pad, box.right - pad, box.bottom - pad }, s = r;
-    OffsetRect(&s, 1, 1);
+    wchar_t *line[8]; int n = 0, tw = 0;
+    for (wchar_t *c = tip; n < 8; ) { line[n++] = c; c = wcschr(c, L'\n'); if (!c) break; *c++ = 0; }
+    for (int i = 0; i < n; i++) {
+        RECT m = {0, 0, 0, 0};
+        g_font->lpVtbl->DrawTextW(g_font, NULL, line[i], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0);
+        if (m.right - m.left > tw) tw = m.right - m.left;
+    }
+    int padX = (int)(22 * k), padT = (int)(25 * k), padB = (int)(16 * k), pitch = (int)(28 * k + 0.5f);
+    int bw = tw + 2 * padX, bh = padT + (n - 1) * pitch + px + padB;
+    if (bw < g_tipMinW * H / 1000) bw = g_tipMinW * H / 1000;       // wide enough to hide the game's own tooltip
+    // where the game puts its own tooltip ("Currently logged in player"): right edge and top relative to the cursor
+    RECT box; box.right = mx + g_tipDX * H / 1000; box.top = my + g_tipDY * H / 1000;
+    if (box.right > W) box.right = W;
+    box.left = box.right - bw; if (box.left < 0) { box.left = 0; box.right = bw; }
+    box.bottom = box.top + bh;
+    {   // calibration: where the cursor and the box are while it is shown (once a second)
+        static DWORD last; DWORD now = GetTickCount();
+        if (now - last > 1000) { last = now; logmsg("menu tooltip: cursor %d,%d box %ld,%ld-%ld,%ld (%dx%d)", mx, my, box.left, box.top, box.right, box.bottom, W, H); }
+    }
+    int haveBox = ensure_box(dev, bw, bh, k < 1 ? 1 : k);
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
     IDirect3DDevice9_SetViewport(dev, &full);
     if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: box first, then the text
         if (haveBox) { float pos[3] = { (float)box.left, (float)box.top, 0.0f }; g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF); }
-        g_font->lpVtbl->DrawTextW(g_font, g_sprite, tip, -1, &s, DT_LEFT | DT_NOCLIP, 0xB0000000);
-        g_font->lpVtbl->DrawTextW(g_font, g_sprite, tip, -1, &r, DT_LEFT | DT_NOCLIP, 0xFFF0EEE4);
+        for (int i = 0; i < n; i++) {
+            RECT r = { box.left + padX, box.top + padT + i * pitch, box.right, box.top + padT + i * pitch + px };
+            g_font->lpVtbl->DrawTextW(g_font, g_sprite, line[i], -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOCLIP, 0xFFD2D2D4);
+        }
         g_sprite->lpVtbl->End(g_sprite);
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
@@ -655,10 +706,13 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     GetPrivateProfileStringW(L"LobbyStats", L"Server", STATS_HOST, g_server, 128, ini);
     if (!g_server[0]) { g_stats = 0; }                        // stats service not set - there will be no numbers
     g_probe = GetPrivateProfileIntW(L"Debug", L"LogInvoke", 0, ini);
+    g_tipDX   = GetPrivateProfileIntW(L"MenuTooltip", L"DX", g_tipDX, ini);
+    g_tipDY   = GetPrivateProfileIntW(L"MenuTooltip", L"DY", g_tipDY, ini);
+    g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.3%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.7.4%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
