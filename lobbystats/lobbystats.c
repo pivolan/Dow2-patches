@@ -17,6 +17,7 @@
 #include <winhttp.h>
 #include <psapi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <wchar.h>
@@ -462,6 +463,9 @@ typedef HRESULT (WINAPI *D3DXCreateSprite_t)(IDirect3DDevice9 *, ID3DXSprite **o
 static D3DXCreateFontA_t p_D3DXCreateFontA;
 static D3DXCreateSprite_t p_D3DXCreateSprite;
 #define D3DXSPRITE_ALPHABLEND 0x10
+#include "../common/gamefont.h"
+// the tooltip's text in the game's own Arial Unicode MS (the font of the lobby tooltip), all printable ASCII
+static GameFont g_tipFont = { " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~" };
 
 typedef void (__fastcall *ThisFn)(void *, void *);
 static ThisFn o_pre;
@@ -501,21 +505,31 @@ static int ensure_font(IDirect3DDevice9 *dev, int px) {
     if (FAILED(hs)) g_sprite = NULL;
     return g_font && g_sprite;
 }
-// box like the game's own tooltip (the lobby slot tooltip at 2560x1440): a light rim, a dark bevel fading in,
-// opaque dark grey fill, slightly rounded corners. k = scale (1 at 1440p).
+// box like the game's own tooltip (lobby slots, "Currently logged in player" at 2560x1440): a worn metal frame with
+// cut corners and a rivet in each corner, a dark line inside it, a dark grey fill with grain. k = scale (1 at 1440p).
+static DWORD shade(DWORD rgb, int g) {                               // rgb + g on each channel, clamped
+    DWORD o = 0;
+    for (int s = 0; s < 24; s += 8) { int v = (int)((rgb >> s) & 255) + g; o |= (DWORD)(v < 0 ? 0 : v > 255 ? 255 : v) << s; }
+    return o;
+}
 static DWORD box_pixel(int x, int y, int w, int h, float k) {
-    float c = 2 * k, px = x + 0.5f, py = y + 0.5f, R = 0.7071f;
+    float c = 6 * k, px = x + 0.5f, py = y + 0.5f, R = 0.7071f;
     float d = px; if (py < d) d = py; if (w - px < d) d = w - px; if (h - py < d) d = h - py;
     float e[4] = { (px + py - c) * R, (w - px + py - c) * R, (px + h - py - c) * R, (w - px + h - py - c) * R };
     for (int i = 0; i < 4; i++) if (e[i] < d) d = e[i];
     if (d <= 0) return 0;
+    unsigned n = (unsigned)(x * 73856093u ^ y * 19349663u); n = (n ^ (n >> 13)) * 1274126177u;
+    int grain = (int)((n >> 24) % 9) - 4;
     DWORD rgb;
-    if (d < 1.5f * k) rgb = 0x646263;                                  // rim
-    else if (d < 5.5f * k) {                                           // bevel: 4D4B4C -> 2A2A2A
-        float t = (d - 1.5f * k) / (4 * k); rgb = 0;
-        for (int s = 0; s < 24; s += 8)
-            rgb |= (DWORD)(((0x4D4B4C >> s) & 255) + (((int)((0x2A2A2A >> s) & 255) - (int)((0x4D4B4C >> s) & 255)) * t)) << s;
-    } else rgb = 0x272729;                                             // fill
+    if (d < 1 * k) rgb = 0x1A1A1A;                                     // dark outer edge
+    else if (d < 4 * k) rgb = shade(py < h / 2 ? 0x5E5C59 : 0x4E4C49, grain * 2);   // metal frame, lit from above
+    else if (d < 5 * k) rgb = 0x161616;                                // dark line inside the frame
+    else rgb = shade(0x29292B, grain);                                 // fill with grain
+    float r = 2.2f * k, ins = 5 * k;                                   // rivets: a dark dot with a light top edge
+    for (int i = 0; i < 4; i++) {
+        float cx = i & 1 ? w - ins : ins, cy = i & 2 ? h - ins : ins, dx = px - cx, dy = py - cy, dd = dx * dx + dy * dy;
+        if (dd < r * r) rgb = dy < -r * 0.3f ? 0x8A8884 : 0x202020;
+    }
     return (d < 1 ? (DWORD)(d * 255) : 255) << 24 | rgb;
 }
 static int ensure_box(IDirect3DDevice9 *dev, int w, int h, float k) {
@@ -584,12 +598,17 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     // edge and its first cell 25 px from the top. Lines are drawn one by one to get the game's line spacing.
     float k = H / 1440.0f;
     int px = (int)(22 * k + 0.5f); if (px < 10) px = 10;
-    if (!ensure_font(dev, px)) return;
-    wchar_t *line[8]; int n = 0, tw = 0;
+    if (!ensure_font(dev, px)) return;                               // also the sprite
+    // the game's own Arial Unicode MS (common/gamefont.h) at the lobby's size: an em of 19.5 px per 1440
+    int gpx = g_tipFont.ok ? (int)(19.5f * k * (g_tipFont.ascent + g_tipFont.descent) / 20480 + 0.5f) : 0;
+    int game = gpx && gf_ready(&g_tipFont, dev, gpx);
+    wchar_t *line[8]; char aline[8][128]; int n = 0, tw = 0;
     for (wchar_t *c = tip; n < 8; ) { line[n++] = c; c = wcschr(c, L'\n'); if (!c) break; *c++ = 0; }
     for (int i = 0; i < n; i++) {
+        WideCharToMultiByte(CP_ACP, 0, line[i], -1, aline[i], 128, NULL, NULL);
         RECT m = {0, 0, 0, 0};
-        g_font->lpVtbl->DrawTextW(g_font, NULL, line[i], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0);
+        if (game) m.right = gf_width(&g_tipFont, aline[i]);
+        else g_font->lpVtbl->DrawTextW(g_font, NULL, line[i], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0);
         if (m.right - m.left > tw) tw = m.right - m.left;
     }
     int padX = (int)(22 * k), padT = (int)(25 * k), padB = (int)(16 * k), pitch = (int)(28 * k + 0.5f);
@@ -610,9 +629,18 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     IDirect3DDevice9_SetViewport(dev, &full);
     if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {   // no sorting: box first, then the text
         if (haveBox) { float pos[3] = { (float)box.left, (float)box.top, 0.0f }; g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF); }
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++) {                                // text with a soft shadow down-right, as in the game
             RECT r = { box.left + padX, box.top + padT + i * pitch, box.right, box.top + padT + i * pitch + px };
-            g_font->lpVtbl->DrawTextW(g_font, g_sprite, line[i], -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOCLIP, 0xFFD2D2D4);
+            if (game) {                                              // same baseline as Arial in its 22 px cell
+                int base = r.top + (int)(17.6f * k + 0.5f);
+                r.top = base - (int)(g_tipFont.ascent * gpx / (g_tipFont.ascent + g_tipFont.descent) + 0.5f);
+            }
+            RECT s = r; OffsetRect(&s, 1, 1);
+            if (game) { gf_draw(&g_tipFont, g_sprite, aline[i], &s, DT_LEFT, 0xA0000000); gf_draw(&g_tipFont, g_sprite, aline[i], &r, DT_LEFT, 0xFFD2D2D4); }
+            else {
+                g_font->lpVtbl->DrawTextW(g_font, g_sprite, line[i], -1, &s, DT_LEFT | DT_SINGLELINE | DT_NOCLIP, 0xA0000000);
+                g_font->lpVtbl->DrawTextW(g_font, g_sprite, line[i], -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOCLIP, 0xFFD2D2D4);
+            }
         }
         g_sprite->lpVtbl->End(g_sprite);
     }
@@ -673,6 +701,7 @@ static int install_d3d_hooks(void) {
     return 1;
 }
 static DWORD WINAPI tip_worker(LPVOID _) {
+    gf_load(&g_tipFont, "Arial Unicode MS", NULL);                  // from the game's files; on failure Windows Arial
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
     for (int i = 0; vers[i]; i++) {
         HMODULE h = LoadLibraryA(vers[i]); if (!h) continue;
@@ -712,7 +741,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.4%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.7.5%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));

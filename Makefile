@@ -13,7 +13,7 @@ $(OUT):
 	mkdir -p $(OUT)
 $(OUT)/ObsFix.dll: obsfix/obsfix.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
-$(OUT)/LobbyStats.dll: lobbystats/lobbystats.c | $(OUT)
+$(OUT)/LobbyStats.dll: lobbystats/lobbystats.c common/gamefont.h | $(OUT)
 	$(CC) $(CFLAGS) $(STATS) -shared -o $@ $< -lwinhttp -lpsapi -lgdi32 -static-libgcc -Wl,--kill-at
 $(OUT)/winmm.dll: vanilla-loader/winmm_proxy.c vanilla-loader/winmm.def | $(OUT)
 	$(CC) -O2 -shared -o $@ $^ -static-libgcc
