@@ -1,6 +1,6 @@
 # All DLLs are 32-bit (DOW2.exe is 32-bit). Needs MinGW-w64: apt install gcc-mingw-w64-i686
 CC = i686-w64-mingw32-gcc
-CFLAGS = -O2 -Wall -Wno-unused-function -Wno-misleading-indentation -Wno-stringop-truncation
+CFLAGS = -O2 -s -Wall -Wno-unused-function -Wno-misleading-indentation -Wno-stringop-truncation
 OUT = build
 # stats service host for LobbyStats, baked into the DLL (make STATS_HOST=other.host, or later in LobbyStats.ini: [LobbyStats] Server=host)
 STATS_HOST ?= rts.fintebtc.de
@@ -16,7 +16,7 @@ $(OUT)/ObsFix.dll: obsfix/obsfix.c | $(OUT)
 $(OUT)/LobbyStats.dll: lobbystats/lobbystats.c common/gamefont.h | $(OUT)
 	$(CC) $(CFLAGS) $(STATS) -shared -o $@ $< -lwinhttp -lpsapi -lgdi32 -static-libgcc -Wl,--kill-at
 $(OUT)/winmm.dll: vanilla-loader/winmm_proxy.c vanilla-loader/winmm.def | $(OUT)
-	$(CC) -O2 -shared -o $@ $^ -static-libgcc
+	$(CC) -O2 -s -shared -o $@ $^ -static-libgcc
 $(OUT)/FrameProbe.dll: frameprobe/frameprobe.c | $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-variable -shared -o $@ $< -lpsapi -lwinmm -static-libgcc
 $(OUT)/ReinforceFix.dll: reinforcefix/reinforcefix.c | $(OUT)
