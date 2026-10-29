@@ -28,6 +28,14 @@
 #define IAT_SIM_PRE     0x00F88154   // World::SimulatePre  (__thiscall, ecx = World), match start
 #define IAT_SIM         0x00F885E4   // World::Simulate     (__thiscall, ecx = World), every sim tick (~8 per second)
 #define IAT_SIM_POST    0x00F88100   // World::SimulatePost (__thiscall, ecx = World), match end
+// SimulatePost comes late, at the end of the loading screen after the match, which shows the last frame with the clock;
+// these come when the match itself ends: the game is decided, or the match scripts stop (leaving through the menu)
+#define IAT_GAME_OVER   0x00F88498   // SimManager::SetGameOver (__thiscall)
+#define IAT_END_SCRIPT  0x00F88170   // Scar::EndScript (__thiscall, returns bool)
+// earlier still: the loading screen is built (0x4A08F3, game_load_screen.gfx) and drawn once before the game freezes on it
+// to unload the match - built while a match runs, it is the way out, and its one frame must come without the clock
+#define LOADSCREEN_ADDR 0x004A08F3
+static const unsigned char LOADSCREEN_PRO[5] = {0xB8, 0x71, 0x69, 0xEF, 0x00};   // mov eax, 0xEF6971
 #define G_SESSION       0x01335678   // *(*G_SESSION + 4) & 0x558: the session is online (live MP), see docs/OBSERVER_LAG.md
 #define ONLINE_MASK     0x558
 #define PAUSE_MS        1000         // a longer gap between two ticks is a pause or a lag: not game time
@@ -109,6 +117,7 @@ static void *volatile g_world;                  // World of the current match
 static volatile int g_inMatch;                  // between SimulatePre and SimulatePost
 static volatile DWORD g_play, g_lastTick;       // game time of the match in ms, GetTickCount() at the last sim tick
 static volatile LONG g_ticks;                   // sim ticks in this match
+static volatile int g_over;                     // the match ended (SetGameOver / EndScript): no clock, no cooldown numbers
 
 static DWORD session_flags(void) {
     DWORD *g = (DWORD *)G_SESSION;
@@ -117,7 +126,7 @@ static DWORD session_flags(void) {
 }
 static void match_start(void *world, const char *why) {
     logmsg("match start (%s): World %p, previous %p, session flags %lX", why, world, g_world, session_flags());
-    g_world = world; g_play = 0; g_lastTick = 0; g_ticks = 0; g_inMatch = 1;
+    g_world = world; g_play = 0; g_lastTick = 0; g_ticks = 0; g_inMatch = 1; g_over = 0;
 }
 static void __fastcall hk_pre(void *self, void *edx) {
     match_start(self, "SimulatePre");
@@ -128,6 +137,34 @@ static void __fastcall hk_post(void *self, void *edx) {
     g_inMatch = 0;
     o_post(self, edx);
 }
+static ThisFn o_over; typedef char (__fastcall *BoolThisFn)(void *, void *); static BoolThisFn o_endscript;
+static void __fastcall hk_over(void *self, void *edx) {
+    if (!g_over && g_inMatch) logmsg("game over (SetGameOver): %lu:%02lu of game time, clock off", g_play / 60000, g_play / 1000 % 60);
+    g_over = 1; o_over(self, edx);
+}
+static char __fastcall hk_endscript(void *self, void *edx) {
+    if (!g_over && g_inMatch) logmsg("match scripts end (EndScript): %lu:%02lu of game time, clock off", g_play / 60000, g_play / 1000 % 60);
+    if (g_inMatch) g_over = 1;
+    return o_endscript(self, edx);
+}
+void mt_load_screen(void) __asm__("mt_load_screen");
+void mt_load_screen(void) {
+    if (g_inMatch && g_ticks && !g_over) { g_over = 1; logmsg("loading screen out of the match: %lu:%02lu of game time, clock off", g_play / 60000, g_play / 1000 % 60); }
+}
+void *g_lsTramp __asm__("mt_ls_tramp");
+__attribute__((naked)) static void hk_loadscreen(void) {
+    __asm__ volatile("pushal\n\t call mt_load_screen\n\t popal\n\t jmp *mt_ls_tramp\n\t");
+}
+static void hook_loadscreen(void) {
+    unsigned char *t = (unsigned char *)LOADSCREEN_ADDR;
+    if (IsBadReadPtr(t, 5) || memcmp(t, LOADSCREEN_PRO, 5)) { logmsg("loading screen builder differs at %08X", LOADSCREEN_ADDR); return; }
+    unsigned char *tr = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    memcpy(tr, LOADSCREEN_PRO, 5); tr[5] = 0xE9; *(DWORD *)(tr + 6) = (LOADSCREEN_ADDR + 5) - (DWORD)(tr + 10);
+    g_lsTramp = tr;
+    DWORD old; VirtualProtect(t, 5, PAGE_EXECUTE_READWRITE, &old);
+    t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)hk_loadscreen - (DWORD)(t + 5);
+    VirtualProtect(t, 5, old, &old); FlushInstructionCache(GetCurrentProcess(), t, 5);
+}
 static void __fastcall hk_sim(void *self, void *edx) {
     DWORD now = GetTickCount(), gap = now - g_lastTick;
     if (self != g_world) match_start(self, "first tick of a new World");    // e.g. the DLL came in mid-match
@@ -137,7 +174,7 @@ static void __fastcall hk_sim(void *self, void *edx) {
     o_sim(self, edx);
 }
 static int clock_visible(void) {
-    if (!g_inMatch || !g_ticks) return 0;                            // menus, loading screen, post-game screen
+    if (!g_inMatch || !g_ticks || g_over) return 0;                  // menus, loading screen, post-game screen
     return !g_onlineOnly || (session_flags() & ONLINE_MASK);        // replays and offline games have no online session
 }
 
@@ -367,7 +404,10 @@ void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
 static int g_clockOff;                          // a stand-alone MatchTimer.dll draws the clock already
 int mt_loading(void) { return g_inMatch && !g_ticks; }   // SimulatePre came, no sim tick yet: the loading screen
 int mt_online(void) { return (session_flags() & ONLINE_MASK) != 0; }
-int mt_ticking(void) { return g_inMatch && g_ticks; }                  // the match runs (past its loading screen)
+int mt_ticking(void) { return g_inMatch && g_ticks && !g_over; }                  // the match runs (past its loading screen)
+DWORD mt_game_ms(void) { return g_play; }
+long mt_ticks(void) { return g_ticks; }
+float mt_ms_per_tick(void) { return g_ticks > 20 && g_play ? (float)g_play / g_ticks : 100.0f; }   // ~100 ms, measured                              // game time of the match, pauses not counted (cooldowns.c)
 #endif
 static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
@@ -514,6 +554,10 @@ static DWORD WINAPI worker(LPVOID _) {
         if (!sim && (sim = iat_hook(IAT_SIM, "SimEngine.dll", hk_sim, (void **)&o_sim))) {
             int pre = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre);
             int post = iat_hook(IAT_SIM_POST, "SimEngine.dll", hk_post, (void **)&o_post);
+            int over = iat_hook(IAT_GAME_OVER, "SimEngine.dll", hk_over, (void **)&o_over);
+            int scr = iat_hook(IAT_END_SCRIPT, "SimEngine.dll", hk_endscript, (void **)&o_endscript);
+            logmsg("match end hooks: game over %s, end of scripts %s", over ? "yes" : "NO", scr ? "yes" : "NO");
+            hook_loadscreen();
             logmsg("sim hooks installed: tick yes, match start %s, match end %s%s", pre ? "yes" : "NO", post ? "yes" : "NO",
                    post ? "" : " - the clock will stay on the post-game screen");
         }

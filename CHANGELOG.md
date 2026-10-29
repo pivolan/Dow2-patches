@@ -4,6 +4,19 @@ Every version gets an entry here before it reaches `main`. CI then tags `vX.Y.Z`
 version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entries since the previous `X.Y.0`.
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
+## 0.1.3 — 2026-10-29
+- LobbyStats v0.9.0 (carries the match clock and the cooldown numbers, one Direct3D hook):
+  - cooldowns/: seconds left on recharging abilities and global abilities in the middle of the button, over the game's
+    own dark sweep, in the game's Caslon Antique New with its text shadow. Read-only (no desync): the share of each
+    button from the panel's SetProgress 0x688620, abilities also asked from the engine after the panel's update (out of
+    energy the game shows no sweep), the rate per sim tick and remembered per ability of each squad; global abilities
+    read exactly (sim ticks left). `[Cooldowns] Enabled, Size (px at 1440), Color` in LobbyStats.ini.
+  - main menu: the stats go into the game's own tooltip of the name bar (Relic rating as the title, win rate, games,
+    Steam hours), no box of ours drawn over it; `[MenuTooltip] Game=0` brings the box back.
+  - loaded late by the Elite injector (the main menu is up by then): the own name comes from Steam and gets its rating.
+  - the match clock (and the numbers) go off when the match ends - the loading screen out of the match is built,
+    the game is decided or the match scripts stop - instead of staying on the frozen loading screen.
+
 ## 0.1.2 — 2026-10-28
 - MatchTimer v2: the digits in the game's own Caslon Antique New, read from the player's game files
   (common/gamefont.h, nothing of the game shipped), above the minimap with the game's own text shadow, like the campaign

@@ -372,6 +372,10 @@ static void probe(void *movie, const char *method, GFxValue *args, unsigned coun
 // main menu: own name in the top right corner, Receive_SetGamerTag(wstr name, num). Looked up by name, as the lobby
 // does for the own slot. Numbers come from the cache; a name not cached yet is fetched and shows up the next time.
 static wchar_t g_tagBuf[128];
+// the main menu movie and the 2nd SetGamerTag argument: loaded late (Elite injector) or with no rating cached yet, the
+// name was set before the rating came - the frame hook (tag_frame) sets it again once with the rating
+#define MENU_MOVIE_VTBL 0x01094C10                    // the main menu movie (SetGamerTag, Version, Enable*Button)
+static void *volatile g_menuMovie; static GFxValue g_tagArg1; static volatile int g_tagDone;
 int mt_online(void); int mt_ticking(void);
 static int g_loadOn = 1;               // [LoadingScreen] Ratings: the rating after each name on the loading screen
 static volatile int g_front;          // the main menu (with the name bar) is the current screen
@@ -465,10 +469,85 @@ static void install_wset(void) {
     logmsg("hooked text widget SetText at %08X (loading screen ratings)", WSET_ADDR);
 }
 
+// main menu: the stats in the game's own tooltip of the name bar ("Currently logged in player"), not a box over it.
+// Every tooltip of every Flash screen is fetched by 0x6824E0 (__thiscall: movie, TipInfo *) through
+// Receive_GetTooltipInfo; the answer goes into TipInfo: +4 instance name (char[512]), +0x208 type, LocStrings at +0x20C
+// title, +0x214 description, +0x21C title 2, +0x224 description 2. We let it run and then put our text into the title and
+// the description (LocString::operator= of Localizer.dll); the game draws it in its own box, font and place.
+#define TIPGET_ADDR 0x006824E0
+static const unsigned char TIPGET_PRO[7] = {0x6A, 0xFF, 0x68, 0xED, 0xDF, 0xEC, 0x00};   // push -1; push 0xECDFED
+typedef int (__fastcall *TipGet_t)(void *movie, void *edx, char *info);
+typedef void *(__thiscall *LocAssign_t)(void *ls, const wchar_t *s);
+typedef const wchar_t *(__thiscall *LocStr_t)(const void *ls);
+static TipGet_t g_tipGet; static LocAssign_t p_locAssign; static LocStr_t p_locStr;
+#define TIP_INST "/display_item/panel1_mc/panel_mc/main_menu_mc/gamertag_btn_mc"   // the name bar (seen 29.10.2026)
+static char g_tipInst[128];                 // [MenuTooltip] Instance=: the name bar's instance; empty = by its text
+static volatile int g_gameTip = 1, g_gameTipWorks;   // Game=1; the game's tooltip got our text at least once
+static char g_tipSeen[16][64]; static int g_ntipSeen;
+static int tip_is_namebar(const char *inst, const wchar_t *t[4]) {
+    // the bar is ".../main_menu_mc/gamertag_btn_mc", but the path in front differs after coming back from a match
+    if (g_tipInst[0] && !strcmp(inst, g_tipInst)) return 1;
+    const char *tail = strrchr(TIP_INST, '/'), *it = strrchr(inst, '/');
+    if (tail && it && !strcmp(it, tail)) return 1;
+    for (int i = 0; i < 4; i++) if (t[i] && (wcsstr(t[i], L"logged in") || wcsstr(t[i], L"Logged in"))) return 1;
+    return 0;
+}
+static int __fastcall hk_tipget(void *movie, void *edx, char *info) {
+    int r = g_tipGet(movie, edx, info);
+    // not gated on g_front: loaded late by the Elite injector we may have missed the main menu's ActivateFirstScreen
+    if (!r || !g_gameTip || !info || IsBadReadPtr(info, 0x22C)) return r;
+    const char *inst = info + 4; const wchar_t *t[4];
+    for (int i = 0; i < 4; i++) { t[i] = p_locStr(info + 0x20C + 8 * i); if (t[i] && IsBadReadPtr(t[i], 2)) t[i] = NULL; }
+    int seen = !strstr(inst, "main_menu") && !strstr(inst, "gamertag");   // only the menu's ones, once each, in the log
+    for (int i = 0; !seen && i < g_ntipSeen; i++) if (!strncmp(g_tipSeen[i], inst, 63)) { seen = 1; break; }
+    if (!seen && g_ntipSeen < 16) {
+        strncpy(g_tipSeen[g_ntipSeen++], inst, 63);
+        char u[4][160];
+        for (int i = 0; i < 4; i++) { u[i][0] = 0; if (t[i]) WideCharToMultiByte(CP_UTF8, 0, t[i], -1, u[i], 160, NULL, NULL); u[i][159] = 0; }
+        logmsg("menu tooltip: instance \"%.80s\" type %d title \"%s\" text \"%s\" title2 \"%s\" text2 \"%s\"", inst, *(int *)(info + 0x208), u[0], u[1], u[2], u[3]);
+    }
+    if (!tip_is_namebar(inst, t)) return r;
+    wchar_t title[128] = L"", desc[320] = L"";
+    EnterCriticalSection(&g_lock);
+    Entry *e = g_menuName[0] ? find(g_menuName) : NULL;
+    if (e && e->known) {
+        int games = e->wins + e->losses, wr = games ? (e->wins * 100 + games / 2) / games : 0;
+        _snwprintf(title, 127, L"Relic rating: %d", e->rating); title[127] = 0;      // no name: it is on the bar anyway
+        format_tip(desc, NULL, e, wr, games);
+        wchar_t *nl = wcschr(desc, L'\n'); if (nl) memmove(desc, nl + 1, (wcslen(nl + 1) + 1) * sizeof(wchar_t));   // the rating is the title
+    }
+    LeaveCriticalSection(&g_lock);
+    if (!desc[0]) return r;                         // numbers not here yet: the game's own text stays
+    p_locAssign(info + 0x20C, title); p_locAssign(info + 0x214, desc);
+    if (!g_gameTipWorks) { g_gameTipWorks = 1; logmsg("menu tooltip: the stats went into the game's own tooltip (\"%.80s\"), no box of ours", inst); }
+    return r;
+}
+static void install_tipget(void) {
+    unsigned char *t = (unsigned char *)TIPGET_ADDR;
+    HMODULE loc = GetModuleHandleA("Localizer.dll");
+    if (loc) {
+        p_locAssign = (LocAssign_t)GetProcAddress(loc, "??4LocString@@QAEAAV0@PB_W@Z");
+        p_locStr = (LocStr_t)GetProcAddress(loc, "??BLocString@@QBEPB_WXZ");
+    }
+    if (!p_locAssign || !p_locStr) { logmsg("menu tooltip: no LocString in Localizer.dll, the box of ours stays"); return; }
+    if (IsBadReadPtr(t, 7) || memcmp(t, TIPGET_PRO, 7)) { logmsg("menu tooltip: DOW2.exe differs at %08X, the box of ours stays", TIPGET_ADDR); return; }
+    unsigned char *tr = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    memcpy(tr, TIPGET_PRO, 7); tr[7] = 0xE9; *(DWORD *)(tr + 8) = (TIPGET_ADDR + 7) - (DWORD)(tr + 12);
+    g_tipGet = (TipGet_t)tr;
+    DWORD old; VirtualProtect(t, 7, PAGE_EXECUTE_READWRITE, &old);
+    t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)hk_tipget - (DWORD)(t + 5); t[5] = t[6] = 0x90;
+    VirtualProtect(t, 7, old, &old); FlushInstructionCache(GetCurrentProcess(), t, 7);
+    logmsg("hooked tooltip fetch at %08X (main menu stats in the game's own tooltip)", TIPGET_ADDR);
+}
+
 static char __fastcall hook(void *self, void *edx, const char *method, int flags, GFxValue *args, unsigned count) {
+    if (!g_menuMovie && !IsBadReadPtr(self, 4) && *(DWORD *)self == MENU_MOVIE_VTBL) g_menuMovie = self;   // loaded late
     if (g_probe && method) probe(self, method, args, count);
-    if (method && args && count >= 1 && !strcmp(method, "Receive_SetGamerTag") && !IsBadReadPtr(args, sizeof(GFxValue)))
+    if (method && args && count >= 1 && !strcmp(method, "Receive_SetGamerTag") && !IsBadReadPtr(args, count * sizeof(GFxValue))) {
         decorate_gamertag(args);
+        g_menuMovie = self; g_tagDone = args[0].v.ws == g_tagBuf;
+        if (count >= 2) g_tagArg1 = args[1]; else g_tagArg1.type = 0;
+    }
     if (method && (!strcmp(method, "Receive_ActivateFirstScreen") || !strcmp(method, "Receive_TransitionForward") ||
                    !strcmp(method, "Receive_TransitionBackward")) && (!count || (args && !IsBadReadPtr(args, sizeof(GFxValue)))))
         screen_event(method, args, count);
@@ -536,7 +615,40 @@ static GameFont g_tipFont = { " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNO
 
 typedef void (__fastcall *ThisFn)(void *, void *);
 static ThisFn o_pre;
-static void __fastcall hk_pre(void *self, void *edx) { g_front = 0; g_nscreen = 0; o_pre(self, edx); }
+static void __fastcall hk_pre(void *self, void *edx) { g_front = 0; g_nscreen = 0; g_menuMovie = NULL; o_pre(self, edx); }
+// every frame on the game's own thread (Shark update, chained with MMFind): the main menu name gets its rating late
+#define IAT_SHARK_UPDATE 0x00F88068
+typedef void (__stdcall *UpdFn)(float dt);
+static UpdFn o_upd;
+// own name when the game set it before we came (the Elite injector loads us ~16 s after the start, the main menu is up
+// by then): the Steam persona name, put through the same path as the game's SetGamerTag (lookup, cache, tooltip)
+static void own_name_from_steam(void) {
+    HMODULE st = GetModuleHandleA("steam_api.dll"); if (!st) return;
+    typedef void *(__cdecl *SteamFriends_t)(void); typedef const char *(__thiscall *PersonaName_t)(void *);
+    SteamFriends_t sf = (SteamFriends_t)GetProcAddress(st, "SteamFriends"); void *fr = sf ? sf() : NULL;
+    const char *n = fr ? ((PersonaName_t)(*(void ***)fr)[0])(fr) : NULL;      // ISteamFriends::GetPersonaName
+    static wchar_t w[64]; if (!n || !*n || !MultiByteToWideChar(CP_UTF8, 0, n, -1, w, 64)) return;
+    GFxValue a; memset(&a, 0, sizeof a); a.type = GFX_WSTRING; a.v.ws = w;
+    decorate_gamertag(&a);
+    char u[160]; WideCharToMultiByte(CP_UTF8, 0, w, -1, u, sizeof u, NULL, NULL);
+    logmsg("main menu: own name \"%s\" from Steam (the game set it before we were loaded)", u);
+}
+static void __stdcall tag_frame(float dt) {
+    o_upd(dt);
+    static int tried; if (!g_menuName[0] && !tried) { tried = 1; own_name_from_steam(); }
+    if (g_tagDone || !g_menuMovie || !g_front || !g_hooked || !g_showInName) return;
+    static GFxValue a[2]; int ok = 0;
+    EnterCriticalSection(&g_lock);
+    Entry *e = g_menuName[0] ? find(g_menuName) : NULL;
+    if (e && e->known) { _snwprintf(g_tagBuf, 127, L"%ls  [%d]", g_menuName, e->rating); g_tagBuf[127] = 0; ok = 1; }
+    LeaveCriticalSection(&g_lock);
+    if (!ok) return;
+    g_tagDone = 1;
+    memset(a, 0, sizeof a); a[0].type = GFX_WSTRING; a[0].v.ws = g_tagBuf; a[1] = g_tagArg1;
+    if (!g_tagArg1.type) { a[1].type = GFX_NUMBER; a[1].v.num = 1; }   // not seen: 1, what the game sends first
+    g_orig(g_menuMovie, NULL, "Receive_SetGamerTag", 0, a, 2);
+    logmsg("main menu: the name set again with the rating (it came after the game set the name)");
+}
 // slot already hooked by another DLL (MatchTimer, FrameProbe) - chain onto it if it points to executable code
 static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     HMODULE m = GetModuleHandleA(dll); MODULEINFO mi;
@@ -712,14 +824,19 @@ extern void (*mt_extra_lost)(IDirect3DDevice9 *);
 extern void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
 int mt_loading(void); int mt_online(void); int mt_ticking(void); void mt_start(const wchar_t *dir, const wchar_t *ini);
 static volatile int g_d3dReady;                     // d3dx and the game font loaded (tip_worker)
+// seconds left on recharging abilities (cooldowns.c), drawn through the same hook
+void cd_start(const wchar_t *dir, const wchar_t *ini); void cd_draw(IDirect3DDevice9 *dev);
+void cd_lost(IDirect3DDevice9 *dev); void cd_reset(IDirect3DDevice9 *dev, HRESULT hr);
 // the loading screen has no Flash calls of its own: it comes right after the lobby's start countdown ("Cancel Countdown
 // (10)" on the cancel button, any language: a number in brackets), so the box shows from the countdown to the first sim tick
 static void ls_draw(IDirect3DDevice9 *dev) {
+    cd_draw(dev);
     if (!g_d3dReady) return;
-    if (g_front) draw_tip(dev);
+    if (g_front && !g_gameTipWorks) draw_tip(dev);  // the box of ours only while the game's own tooltip hasn't got the stats
 }
 // ID3DXFont/ID3DXSprite hold state blocks and video memory: they must let go before Reset or Reset fails
 static void ls_lost(IDirect3DDevice9 *dev) {
+    cd_lost(dev);
     if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
         if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
@@ -727,6 +844,7 @@ static void ls_lost(IDirect3DDevice9 *dev) {
     }
 }
 static void ls_reset(IDirect3DDevice9 *dev, HRESULT hr) {
+    cd_reset(dev, hr);
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
@@ -745,7 +863,14 @@ static DWORD WINAPI tip_worker(LPVOID _) {
     if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("tooltip: no d3dx9_*.dll, no main menu tooltip"); return 0; }
     g_d3dReady = 1;
     for (int i = 0; i < 120; i++) {
-        if (iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre)) { logmsg("main menu tooltip and loading screen ratings ready"); return 0; }
+        if (iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre)) {
+            logmsg("main menu tooltip and loading screen ratings ready");
+            for (int k = 0; k < 120; k++) {
+                if (GetModuleHandleA("Shark.dll") && iat_hook(IAT_SHARK_UPDATE, "Shark.dll", (void *)tag_frame, (void **)&o_upd)) { logmsg("frame hook ready (late rating for the menu name)"); break; }
+                Sleep(1000);
+            }
+            return 0;
+        }
         Sleep(1000);
     }
     logmsg("tooltip: no World::SimulatePre import, no main menu tooltip");
@@ -775,13 +900,16 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.8.4%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.9.0%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
-    load_cache(); install(); if (g_loadOn) install_wset();
+    g_gameTip = GetPrivateProfileIntW(L"MenuTooltip", L"Game", 1, ini);
+    { wchar_t w[128]; GetPrivateProfileStringW(L"MenuTooltip", L"Instance", L"" TIP_INST, w, 128, ini); WideCharToMultiByte(CP_ACP, 0, w, -1, g_tipInst, sizeof g_tipInst, NULL, NULL); }
+    load_cache(); install(); if (g_loadOn) install_wset(); if (g_stats && g_gameTip) install_tipget();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     if (g_stats) CloseHandle(CreateThread(NULL, 0, tip_worker, NULL, 0, NULL));
     mt_extra_draw = ls_draw; mt_extra_lost = ls_lost; mt_extra_reset = ls_reset;
     mt_start(g_dir, ini);                            // the clock and the one device hook
+    cd_start(g_dir, ini);                            // cooldown numbers on the ability buttons
     return TRUE;
 }
 

@@ -35,6 +35,12 @@ vanilla-loader/
     <game>\dow2-patches\, in vanilla and in Elite. Each patch refuses to load twice, so having the same
     DLL in Elite_DLLs as well is fine.
 
+cooldowns/
+    Cooldown numbers (inside LobbyStats.dll): seconds left on recharging abilities and global abilities in the middle of
+    the button, over the game's own sweep, in the game's font. Only reads: the share the HUD shows, the engine's own
+    recharge query and, for global abilities, the sim ticks left - no desync. LobbyStats.ini [Cooldowns]: Enabled,
+    Size (px at 1440), Color.
+
 frameprobe/
     The diagnostics DLL I used to find the observer lag: frame times, sim ticks, a stack sampler on the
     game thread, a probe on the post-game Continue button.
