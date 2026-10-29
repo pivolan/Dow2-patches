@@ -15,7 +15,7 @@ $(OUT)/ObsFix.dll: obsfix/obsfix.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
 # LobbyStats carries the match clock too (matchtimer.c with -DMT_EMBED): one Direct3D hook for both
 $(OUT)/LobbyStats.dll: lobbystats/lobbystats.c matchtimer/matchtimer.c common/gamefont.h | $(OUT)
-	$(CC) $(CFLAGS) $(STATS) -DMT_EMBED -shared -o $@ lobbystats/lobbystats.c matchtimer/matchtimer.c -lwinhttp -lpsapi -lgdi32 -static-libgcc -Wl,--kill-at
+	$(CC) $(CFLAGS) $(STATS) -DMT_EMBED -shared -o $@ lobbystats/lobbystats.c matchtimer/matchtimer.c -lwinhttp -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--kill-at
 $(OUT)/winmm.dll: vanilla-loader/winmm_proxy.c vanilla-loader/winmm.def | $(OUT)
 	$(CC) -O2 -s -shared -o $@ $^ -static-libgcc
 $(OUT)/FrameProbe.dll: frameprobe/frameprobe.c | $(OUT)
