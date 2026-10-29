@@ -98,7 +98,13 @@ RankAttackTargets = function()
 	local list = EliteAI.collect; EliteAI.collect = nil
 	if not ok then log("RankAttackTargets error:", tostring(err)); return end
 	table.sort(list, function(a, b) return a.pr > b.pr end)
-	EliteAI.best = list[1] and list[1].mp
+	-- 0.7: the position now, not the point: Elite rebuilds its military points, a point kept for the director's next
+	-- tick is a dead engine object - reading it crashed the game (R6025 pure virtual call, 0:30-3:00 into a match)
+	EliteAI.best_pos = nil
+	if list[1] then
+		local ok, p = pcall(Military_GetMilitaryPointPosition, list[1].mp)
+		if ok and p then EliteAI.best_pos = { x = p.x, y = p.y, z = p.z }; EliteAI.best_key = string.format("%.0f %.0f", p.x, p.z) end
+	end
 	local k = num("AttackTargets", 2)
 	if k <= 0 or table.getn(list) <= k then return end
 	Military_ClearTargets(s_selfplayer, MTARGET_Attack)
@@ -186,7 +192,7 @@ function EliteAI_Director()
 		end
 	end
 	-- 2) no fight: the target, as one army
-	local target = EliteAI.best and Military_GetMilitaryPointPosition(EliteAI.best)
+	local target = EliteAI.best_pos                              -- {x, y, z}: dist() and order() read only the fields
 	if not target then return end
 	local cx, cz = 0, 0
 	for _, u in ipairs(active) do cx = cx + u.pos.x; cz = cz + u.pos.z end
@@ -200,9 +206,9 @@ function EliteAI_Director()
 		for _, u in ipairs(active) do if dist(u.pos, target) < dist(lead.pos, target) then lead = u end end
 		for _, u in ipairs(active) do if u ~= lead and dist(u.pos, lead.pos) > gr * 0.6 then order(u.sq, lead.pos, ORD_MOVE) end end
 		EliteAI.phase = "gather"
-	elseif EliteAI.phase ~= "attack" or now - (EliteAI.attack_t or 0) > 12 or EliteAI.attack_mp ~= EliteAI.best then
+	elseif EliteAI.phase ~= "attack" or now - (EliteAI.attack_t or 0) > 12 or EliteAI.attack_mp ~= EliteAI.best_key then
 		for _, u in ipairs(active) do order(u.sq, target, ORD_ATTACK) end
-		EliteAI.phase, EliteAI.attack_t, EliteAI.attack_mp = "attack", now, EliteAI.best
+		EliteAI.phase, EliteAI.attack_t, EliteAI.attack_mp = "attack", now, EliteAI.best_key
 	end
 end
 

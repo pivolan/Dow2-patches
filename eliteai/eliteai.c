@@ -204,6 +204,71 @@ static int __stdcall load_hook(void *L, LuaReader reader, void *data, const char
     return g_loadOrig(L, reader, data, chunkname);
 }
 
+// 0.7: the new AI is visible in the lobby. It plays as the Normal computer, so the game setup menu says so: "Add Normal
+// Computer" / "Normal Computer Player" (ucs 555027 / 555036) read "new AI" while this add-on is on. The game takes its
+// texts from Localizer.dll (GetString by number, ConvertLocIDToString for "$555036" from the menus) - hooked in the
+// import tables of every module. Russian if the original text is Cyrillic, English otherwise.
+typedef struct { void *vt; void *imp; } LocString;                                     // opaque, only passed on
+typedef LocString *(__stdcall *GetStrV)(LocString *ret, int id);
+typedef unsigned char (__stdcall *GetStrB)(int id, LocString *out);
+typedef LocString *(__stdcall *ConvId)(LocString *ret, const wchar_t *s);
+typedef LocString *(__fastcall *LsAssign)(LocString *self, void *edx, const wchar_t *s);
+typedef const wchar_t *(__fastcall *LsCstr)(const LocString *self, void *edx);
+static GetStrV o_getv; static GetStrB o_getb; static ConvId o_conv; static LsAssign p_assign; static LsCstr p_cstr;
+
+static void relabel(int id, LocString *ls) {
+    const wchar_t *w = NULL;
+    if (id != 555027 && id != 555036) return;
+    if (!single_player()) return;                    // online lobbies: Normal there is Elite's AI - no "new AI" label
+    const wchar_t *orig = p_cstr(ls, NULL); int ru = 0;
+    for (const wchar_t *c = orig; c && *c; c++) if (*c >= 0x400 && *c < 0x500) { ru = 1; break; }
+    if (id == 555027) w = ru ? L"Добавить НОВЫЙ ИИ" : L"Add NEW AI Computer";
+    else              w = ru ? L"НОВЫЙ ИИ (компьютер)" : L"NEW AI Computer";
+    p_assign(ls, NULL, w);
+    static int said; if (said++ < 4) logmsg("label %d -> new AI (game type %lX)", id, game_type());
+}
+static LocString *__stdcall h_getv(LocString *ret, int id) { LocString *r = o_getv(ret, id); relabel(id, r); return r; }
+static unsigned char __stdcall h_getb(int id, LocString *out) { unsigned char ok = o_getb(id, out); if (ok) relabel(id, out); return ok; }
+static LocString *__stdcall h_conv(LocString *ret, const wchar_t *s) {
+    LocString *r = o_conv(ret, s);
+    if (s && s[0] == L'$') relabel(_wtoi(s + 1), r);
+    return r;
+}
+static int patch_iat(const char *dllname, void *real, void *hook) {
+    HMODULE mods[512]; DWORD need = 0, n = 0;
+    typedef BOOL (WINAPI *Enum_t)(HANDLE, HMODULE *, DWORD, LPDWORD);
+    Enum_t en = (Enum_t)GetProcAddress(LoadLibraryA("psapi.dll"), "EnumProcessModules");
+    if (!en || !en(GetCurrentProcess(), mods, sizeof mods, &need)) return 0;
+    for (DWORD m = 0; m < need / sizeof(HMODULE) && m < 512; m++) {
+        unsigned char *b = (unsigned char *)mods[m]; IMAGE_DOS_HEADER *d = (IMAGE_DOS_HEADER *)b;
+        if (IsBadReadPtr(d, sizeof *d) || d->e_magic != IMAGE_DOS_SIGNATURE) continue;
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + d->e_lfanew);
+        IMAGE_DATA_DIRECTORY dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if (!dir.VirtualAddress) continue;
+        for (IMAGE_IMPORT_DESCRIPTOR *imp = (IMAGE_IMPORT_DESCRIPTOR *)(b + dir.VirtualAddress); imp->Name; imp++) {
+            if (lstrcmpiA((const char *)(b + imp->Name), dllname)) continue;
+            for (IMAGE_THUNK_DATA *t = (IMAGE_THUNK_DATA *)(b + imp->FirstThunk); t->u1.Function; t++)
+                if ((void *)t->u1.Function == real) {
+                    DWORD o; VirtualProtect(&t->u1.Function, 4, PAGE_READWRITE, &o); t->u1.Function = (DWORD)hook; VirtualProtect(&t->u1.Function, 4, o, &o); n++;
+                }
+        }
+    }
+    return (int)n;
+}
+static void install_labels(void) {
+    HMODULE lz = GetModuleHandleW(L"Localizer.dll");
+    if (!lz) { logmsg("Localizer.dll not loaded - no new AI label"); return; }
+    o_getv = (GetStrV)GetProcAddress(lz, "?GetString@Localizer@@SG?AVLocString@@H@Z");
+    o_getb = (GetStrB)GetProcAddress(lz, "?GetString@Localizer@@SG_NHAAVLocString@@@Z");
+    o_conv = (ConvId)GetProcAddress(lz, "?ConvertLocIDToString@Localizer@@SG?AVLocString@@PB_W@Z");
+    p_assign = (LsAssign)GetProcAddress(lz, "??4LocString@@QAEAAV0@PB_W@Z");
+    p_cstr = (LsCstr)GetProcAddress(lz, "?c_str@LocString@@QBEPB_WXZ");
+    if (!o_getv || !o_getb || !o_conv || !p_assign || !p_cstr) { logmsg("Localizer.dll exports missing - no new AI label"); return; }
+    int a = patch_iat("Localizer.dll", (void *)o_getv, (void *)h_getv), b = patch_iat("Localizer.dll", (void *)o_getb, (void *)h_getb),
+        c = patch_iat("Localizer.dll", (void *)o_conv, (void *)h_conv);
+    logmsg("new AI label: GetString %d+%d, ConvertLocIDToString %d import(s)", a, b, c);
+}
+
 static const unsigned char LOAD_PRO[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14};   // push ebp; mov ebp,esp; sub esp,14h
 static int install(void) {
     HMODULE lc = GetModuleHandleW(L"LuaConfig.dll");
@@ -234,6 +299,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     GetModuleFileNameW(NULL, g_dir, MAX_PATH); wchar_t *s = wcsrchr(g_dir, L'\\'); if (s) wcscpy(s + 1, L"Elite_DLLs\\");
     _snwprintf(g_ini, MAX_PATH, L"%lsEliteAI.ini", g_dir);
     g_verbose = GetPrivateProfileIntW(L"EliteAI", L"Verbose", 0, g_ini);
-    logmsg("EliteAI 0.6 start (single-player games only), hook %s", install() ? "installed" : "NOT installed");
+    logmsg("EliteAI 0.7 start (single-player games only), hook %s", install() ? "installed" : "NOT installed");
+    install_labels();
     return TRUE;
 }
