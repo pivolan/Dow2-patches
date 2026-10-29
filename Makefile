@@ -7,15 +7,15 @@ STATS_HOST ?= rts.fintebtc.de
 STATS = $(if $(STATS_HOST),-DSTATS_HOST='L"$(STATS_HOST)"',)
 
 all: $(OUT)/ObsFix.dll $(OUT)/LobbyStats.dll $(OUT)/winmm.dll $(OUT)/FrameProbe.dll $(OUT)/ReinforceFix.dll
-all: $(OUT)/CGNumbers.dll $(OUT)/MatchTimer.dll $(OUT)/EliteAI.dll $(OUT)/Reverse.dll $(OUT)/MMFind.dll
+all: $(OUT)/CGNumbers.dll $(OUT)/EliteAI.dll $(OUT)/Reverse.dll $(OUT)/MMFind.dll
 
 $(OUT):
 	mkdir -p $(OUT)
 $(OUT)/ObsFix.dll: obsfix/obsfix.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
-# LobbyStats carries the match clock too (matchtimer.c with -DMT_EMBED): one Direct3D hook for both
-$(OUT)/LobbyStats.dll: lobbystats/lobbystats.c lobbystats/join_sound.h matchtimer/matchtimer.c common/gamefont.h | $(OUT)
-	$(CC) $(CFLAGS) $(STATS) -DMT_EMBED -shared -o $@ lobbystats/lobbystats.c matchtimer/matchtimer.c -lwinhttp -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--kill-at
+# LobbyStats carries the match clock (matchtimer.c with -DMT_EMBED) and the cooldown numbers (cooldowns.c): one Direct3D hook for all
+$(OUT)/LobbyStats.dll: lobbystats/lobbystats.c lobbystats/join_sound.h matchtimer/matchtimer.c cooldowns/cooldowns.c common/gamefont.h | $(OUT)
+	$(CC) $(CFLAGS) $(STATS) -DMT_EMBED -shared -o $@ lobbystats/lobbystats.c matchtimer/matchtimer.c cooldowns/cooldowns.c -lwinhttp -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--kill-at
 $(OUT)/winmm.dll: vanilla-loader/winmm_proxy.c vanilla-loader/winmm.def | $(OUT)
 	$(CC) -O2 -s -shared -o $@ $^ -static-libgcc
 $(OUT)/FrameProbe.dll: frameprobe/frameprobe.c | $(OUT)
@@ -29,10 +29,6 @@ clean:
 
 $(OUT)/CGNumbers.dll: cgnumbers/cgnumbers.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -ld3d9 -static-libgcc
-
-$(OUT)/MatchTimer.dll: matchtimer/matchtimer.c common/gamefont.h | $(OUT)
-	$(CC) $(CFLAGS) -shared -o $@ $< -lpsapi -static-libgcc
-
 
 $(OUT)/EliteAI.dll: eliteai/eliteai.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
