@@ -17,7 +17,7 @@
     "dll": "FrameProbe.dll"
   },
   "eliteai": {
-    "version": "0.5",
+    "version": "0.6",
     "dll": "EliteAI.dll",
     "files": {
       "EliteAI/main.ai": "eliteai/mod/main.ai",

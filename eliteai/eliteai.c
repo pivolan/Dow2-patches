@@ -129,20 +129,26 @@ static int append_load(void *L, LuaReader reader, void *data, const char *chunkn
     BufState st = { all, n, 0 }; give_log(L);
     int r = g_loadOrig(L, buf_reader, &st, chunkname); free(all); return r;
 }
-// Online the new AI must stay out: the AI and SCAR scripts run on every machine of the match, so one player with it
-// would desync the game for everyone. The game's own test for "live multiplayer" (see docs/OBSERVER_LAG.md): the
-// network session's flags & 0x558. Skirmish, campaign and replays have no online session.
-#define G_SESSION   0x01335678
-#define ONLINE_MASK 0x558
-static int online(void) {
-    DWORD *g = (DWORD *)G_SESSION;
-    if (IsBadReadPtr(g, 4) || !*g || IsBadReadPtr((void *)(*g + 4), 4)) return 0;
-    return (*(DWORD *)(*g + 4) & ONLINE_MASK) != 0;
+// The new AI only in single-player games. The AI and SCAR scripts run on every machine of a match, so one player with it
+// would desync an online game for everyone; a replay must replay with the scripts it was recorded with. The game type
+// is [*(0x01335A78) + 0x118] (reverse 21.10): SP_SKIRMISH 0x4, SP_FFA_SOLO 0x80, SP_FFA_TEAM 0x200; every MP_* is in
+// 0x558, PLAYBACK 0x800. (0.5 used the network session's flags instead - they are set whenever the game is logged in
+// to Steam, so the new AI never came on, not even in a skirmish.)
+#define G_GAME      0x01335A78
+#define SP_TYPES    (0x4 | 0x80 | 0x200)
+#define NOT_SP      (0x558 | 0x800)
+static DWORD game_type(void) {
+    DWORD *g = (DWORD *)G_GAME;
+    if (IsBadReadPtr(g, 4) || !*g || IsBadReadPtr((void *)(*g + 0x118), 4)) return 0;
+    return *(DWORD *)(*g + 0x118);
 }
+static int single_player(void) { DWORD t = game_type(); return (t & SP_TYPES) && !(t & NOT_SP); }
 static int __stdcall load_hook(void *L, LuaReader reader, void *data, const char *chunkname) {
     char rel[400];
-    if (online()) {                                    // live multiplayer: Elite's own scripts, untouched
-        static DWORD said; if (GetTickCount() - said > 60000) { said = GetTickCount(); logmsg("online game: the new AI stays out (Elite's own AI)"); }
+    if (!single_player()) {                            // online, replay, menus: Elite's own scripts, untouched
+        static DWORD said, lastType = 1;
+        DWORD t = game_type();
+        if (t && (t != lastType || GetTickCount() - said > 60000)) { said = GetTickCount(); lastType = t; logmsg("game type %lX (not single player): the new AI stays out", t); }
         return g_loadOrig(L, reader, data, chunkname);
     }
     if (chunkname) {                                   // SCAR scripts: EliteAI\append\scar\<name> is appended (the order queue of the new AI)
@@ -228,6 +234,6 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     GetModuleFileNameW(NULL, g_dir, MAX_PATH); wchar_t *s = wcsrchr(g_dir, L'\\'); if (s) wcscpy(s + 1, L"Elite_DLLs\\");
     _snwprintf(g_ini, MAX_PATH, L"%lsEliteAI.ini", g_dir);
     g_verbose = GetPrivateProfileIntW(L"EliteAI", L"Verbose", 0, g_ini);
-    logmsg("EliteAI 0.5 start (skirmish only, never online), hook %s", install() ? "installed" : "NOT installed");
+    logmsg("EliteAI 0.6 start (single-player games only), hook %s", install() ? "installed" : "NOT installed");
     return TRUE;
 }

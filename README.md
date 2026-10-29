@@ -55,8 +55,8 @@ eliteai/
     eliteai/mod/main.ai into Elite's default.ai right before its InitializeAI() call (the army fights together, holds
     its target, waits for the others at the rally point), and appends the order queue to elite.scar. Elite's archives
     are not touched. In a skirmish the Normal computer gets it (EliteAI.ini [Lua] NewAI=all|none|normal|<player ids>);
-    in a live online game it stays out completely - the scripts run on every machine of a match, one player with it
-    would desync everyone.
+    only in single-player games (by the game type, [*(0x01335A78)+0x118]): online and in replays it stays out - the
+    scripts run on every machine of a match, one player with it would desync everyone.
 
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
