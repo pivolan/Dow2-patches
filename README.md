@@ -50,6 +50,13 @@ matchtimer/
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 
+reverse/
+    Backing off like the reverse order of Company of Heroes: hold Alt and right-click the ground, the selected squads
+    move straight back toward the point, at most 25 m per click, and vehicles drive backwards instead of turning
+    around (the game's own turn plans reverse on paths up to 30 m; a long move or a queue turns around - so one step
+    per click). Only the point of the player's own right-click is moved: the order is the normal one, nothing in the
+    simulation changes, no desync, the other players don't need it. Reverse.ini: Key, StepMeters.
+
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
 
