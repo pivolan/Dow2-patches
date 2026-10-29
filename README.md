@@ -54,9 +54,15 @@ eliteai/
     The new AI (launcher add-on "New AI (test, skirmish only)"). EliteAI.dll hooks lua_load in LuaConfig.dll and puts
     eliteai/mod/main.ai into Elite's default.ai right before its InitializeAI() call (the army fights together, holds
     its target, waits for the others at the rally point), and appends the order queue to elite.scar. Elite's archives
-    are not touched. In a skirmish the Normal computer gets it (EliteAI.ini [Lua] NewAI=all|none|normal|<player ids>);
+    are not touched. In a skirmish the Normal computer gets it (the setup menu calls it "NEW AI Computer") (EliteAI.ini [Lua] NewAI=all|none|normal|<player ids>);
     only in single-player games (by the game type, [*(0x01335A78)+0x118]): online and in replays it stays out - the
     scripts run on every machine of a match, one player with it would desync everyone.
+
+reverse/
+    Backing off like the reverse order of Company of Heroes: hold Ctrl and right-click the ground, the selected squads
+    back off to the point (also on the minimap), vehicles driving backwards instead of turning around: the game's
+    own turn plans reverse on paths up to 30 m, so the way is driven in 25 m legs, the next one 8 m before the end of the current, without stopping. Only the point of the player's own right-click is moved: the order is the normal one, nothing in the
+    simulation changes, no desync, the other players don't need it. Reverse.ini: Key, StepMeters, LeadMeters.
 
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
