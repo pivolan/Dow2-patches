@@ -10,6 +10,9 @@
 // A name is first shown without numbers; they appear on the next lobby update (join, ready,
 // race change) and immediately in later lobbies (disk cache next to the DLL).
 // Players are matched by SteamID64 from the slot data (name is only a fallback).
+// The loading screen of an online match gets a box with everyone's rating (the players of the last lobby, by team).
+// The match clock (matchtimer/matchtimer.c, built in with -DMT_EMBED) lives here too and owns the one Direct3D hook:
+// on the device the game itself creates, never a throwaway one.
 // It only reads the lobby: no kicking, no chat commands, no extra menus.
 //
 // Works only with DOW2.exe 3.19 (Steam): the prologue bytes are checked before installing.
@@ -189,6 +192,7 @@ static int ids_by_position(unsigned long long *ids, int cap) {
 
 typedef struct { wchar_t key[64], name[64]; unsigned long long id; int st, pos, obs; } Seen;
 static Seen g_seen[16]; static int g_nseen;
+static volatile DWORD g_lobbyAt;                            // a lobby list came (decorate): its players load next
 static unsigned long long g_localId;                        // own ID (from the slot the game marked as own)
 static int g_maxPlayers;                                    // player seats; positions beyond are observers
 
@@ -236,7 +240,9 @@ static void decorate(GFxValue *args, unsigned count) {
         unsigned long long id = 0;
         int si = a[A_SLOTINDEX].type == GFX_NUMBER ? (int)a[A_SLOTINDEX].v.num : -1;
         if (si >= 0 && si < nids && ids[si]) id = ids[si];       // player ID by slot position
-        int observer = g_maxPlayers > 0 && si >= g_maxPlayers;  // observer: position beyond the player seats
+        // positions: team 1 = 0..3, team 2 = 4..7, each team's first maxPlayers/2 are players, the rest observer seats
+        int tn = g_maxPlayers > 1 ? g_maxPlayers / 2 : 4;
+        int observer = si >= 0 && ((si % 4) >= tn || si >= 8);
         wchar_t key[64];
         if ((id >> 32) == 0x01100001) _snwprintf(key, 63, L"/steam/%llu", id); else wcsncpy(key, name, 63);   // stats are looked up by SteamID or by name
         key[63] = 0;
@@ -261,6 +267,12 @@ static void decorate(GFxValue *args, unsigned count) {
         }
         format_tip(g_tipBuf[i], name, e, wr, games);
         a[A_TOOLTIP].type = GFX_WSTRING; a[A_TOOLTIP].v.ws = g_tipBuf[i];
+    }
+    g_lobbyAt = GetTickCount();                     // these players load next (the loading screen's names get the rating)
+    {   // players of this lobby (observers not counted) for Relay.dll: its server keeps the match only if all of them come
+        int np = 0; char v[8];
+        for (int k = 0; k < g_nseen; k++) if (!g_seen[k].obs) np++;
+        wsprintfA(v, "%d", np); SetEnvironmentVariableA("DOW2_LOBBY_PLAYERS", v);
     }
     {   // lobby roster changed - log who is there
         static unsigned long long lastSig; unsigned long long sig = nids * 1315423911ULL + g_nseen;
@@ -360,6 +372,8 @@ static void probe(void *movie, const char *method, GFxValue *args, unsigned coun
 // main menu: own name in the top right corner, Receive_SetGamerTag(wstr name, num). Looked up by name, as the lobby
 // does for the own slot. Numbers come from the cache; a name not cached yet is fetched and shows up the next time.
 static wchar_t g_tagBuf[128];
+int mt_online(void); int mt_ticking(void);
+static int g_loadOn = 1;               // [LoadingScreen] Ratings: the rating after each name on the loading screen
 static volatile int g_front;          // the main menu (with the name bar) is the current screen
 static wchar_t g_menuName[64];        // own name from SetGamerTag (under g_lock), for the main menu tooltip
 // menu tooltip placement, [MenuTooltip] in the ini, in 1/1000 of the screen height: its right edge and top relative
@@ -396,6 +410,59 @@ static void decorate_gamertag(GFxValue *args) {
     }
     LeaveCriticalSection(&g_lock);
     if (want) SetEvent(g_wake);
+}
+
+// loading screen (game_load_screen.gfx): the banners are C++ text widgets ("%s/name_txt", built in 0x4A08F3), filled by
+// the widget's SetText 0x688960 (cdecl: widget, const wchar_t *text; AL = force). Not through Invoke. We detour it: while
+// the players of the last lobby load (from PopulatePlayerList to the first sim tick of an online match) a text equal to
+// one of their names gets "  [rating]" - the same as in the lobby, nothing drawn over the screen (as wellplayed asked).
+#define WSET_ADDR 0x00688960
+static const unsigned char WSET_PRO[5] = {0x53, 0x8B, 0x5C, 0x24, 0x08};   // push ebx; mov ebx,[esp+8]
+void *g_wsetTramp __asm__("ls_wset_tramp");
+static wchar_t g_loadBuf[16][128]; static int g_nloadBuf;
+const wchar_t *wset_filter(void *w, const wchar_t *t) __asm__("ls_wset_filter");
+const wchar_t *wset_filter(void *w, const wchar_t *t) {
+    (void)w;
+    if (!t || !t[0] || !g_loadOn || !g_stats || !g_lobbyAt || !g_nseen) return t;
+    if (mt_ticking()) { g_lobbyAt = 0; return t; }                    // the match runs: the loading screen is gone
+    if (!mt_online() || IsBadReadPtr(t, 2)) return t;
+    const wchar_t *out = t;
+    EnterCriticalSection(&g_lock);
+    for (int k = 0; k < g_nseen; k++) {
+        if (g_seen[k].obs || wcscmp(t, g_seen[k].name)) continue;
+        Entry *e = find(g_seen[k].key);
+        if (e && e->known) {
+            wchar_t *o = g_loadBuf[g_nloadBuf++ & 15];
+            _snwprintf(o, 127, L"%ls  [%d]", t, e->rating); o[127] = 0; out = o;
+            char n8[160]; WideCharToMultiByte(CP_UTF8, 0, t, -1, n8, sizeof n8, NULL, NULL);
+            logmsg("loading screen: %s [%d]", n8, e->rating);
+        }
+        break;
+    }
+    LeaveCriticalSection(&g_lock);
+    return out;
+}
+__attribute__((naked)) static void hk_wset(void) {
+    __asm__ volatile(
+        "pushl %eax\n\t pushl %ecx\n\t pushl %edx\n\t"     // AL is an argument; ecx/edx kept too
+        "movl 16(%esp), %ecx\n\t movl 20(%esp), %edx\n\t"  // widget, text
+        "pushl %edx\n\t pushl %ecx\n\t"
+        "call ls_wset_filter\n\t"
+        "addl $8, %esp\n\t"
+        "movl %eax, 20(%esp)\n\t"                         // the (maybe decorated) text goes on
+        "popl %edx\n\t popl %ecx\n\t popl %eax\n\t"
+        "jmp *ls_wset_tramp\n\t");
+}
+static void install_wset(void) {
+    unsigned char *t = (unsigned char *)WSET_ADDR;
+    if (IsBadReadPtr(t, 5) || memcmp(t, WSET_PRO, 5)) { logmsg("text widget SetText differs at %08X: no ratings on the loading screen", WSET_ADDR); return; }
+    unsigned char *tr = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    memcpy(tr, WSET_PRO, 5); tr[5] = 0xE9; *(DWORD *)(tr + 6) = (WSET_ADDR + 5) - (DWORD)(tr + 10);
+    g_wsetTramp = tr;
+    DWORD old; VirtualProtect(t, 5, PAGE_EXECUTE_READWRITE, &old);
+    t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)hk_wset - (DWORD)(t + 5);
+    VirtualProtect(t, 5, old, &old); FlushInstructionCache(GetCurrentProcess(), t, 5);
+    logmsg("hooked text widget SetText at %08X (loading screen ratings)", WSET_ADDR);
 }
 
 static char __fastcall hook(void *self, void *edx, const char *method, int flags, GFxValue *args, unsigned count) {
@@ -485,9 +552,6 @@ static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     return 1;
 }
 
-typedef HRESULT (WINAPI *EndScene_t)(IDirect3DDevice9 *);
-typedef HRESULT (WINAPI *Reset_t)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
-static EndScene_t o_EndScene; static Reset_t o_Reset;
 static ID3DXFont *g_font; static ID3DXSprite *g_sprite;
 static IDirect3DDevice9 *g_fontDev; static int g_fontPx, g_lost;
 static IDirect3DTexture9 *g_box; static IDirect3DDevice9 *g_boxDev; static int g_boxW, g_boxH;
@@ -642,59 +706,32 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
-static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
+// ---------- the one Direct3D hook is MatchTimer's (matchtimer.c, MT_EMBED): we draw through its callbacks ----------
+extern void (*mt_extra_draw)(IDirect3DDevice9 *);
+extern void (*mt_extra_lost)(IDirect3DDevice9 *);
+extern void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
+int mt_loading(void); int mt_online(void); int mt_ticking(void); void mt_start(const wchar_t *dir, const wchar_t *ini);
+static volatile int g_d3dReady;                     // d3dx and the game font loaded (tip_worker)
+// the loading screen has no Flash calls of its own: it comes right after the lobby's start countdown ("Cancel Countdown
+// (10)" on the cancel button, any language: a number in brackets), so the box shows from the countdown to the first sim tick
+static void ls_draw(IDirect3DDevice9 *dev) {
+    if (!g_d3dReady) return;
     if (g_front) draw_tip(dev);
-    return o_EndScene(dev);
 }
 // ID3DXFont/ID3DXSprite hold state blocks and video memory: they must let go before Reset or Reset fails
-static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp) {
+static void ls_lost(IDirect3DDevice9 *dev) {
     if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
         if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
         g_lost = 1;
     }
-    HRESULT hr = o_Reset(dev, pp);
+}
+static void ls_reset(IDirect3DDevice9 *dev, HRESULT hr) {
     if (g_lost && SUCCEEDED(hr)) {
         if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
         if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
         g_lost = 0;
     }
-    return hr;
-}
-static void *vt_hook(void **vtbl, int index, void *fn) {
-    DWORD old;
-    VirtualProtect(&vtbl[index], sizeof(void *), PAGE_EXECUTE_READWRITE, &old);
-    void *prev = vtbl[index];
-    vtbl[index] = fn;
-    VirtualProtect(&vtbl[index], sizeof(void *), old, &old);
-    return prev;
-}
-// create a throwaway device to reach the device vtable (shared with the game's device), then hook it
-static int install_d3d_hooks(void) {
-    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
-    IDirect3D9 *(WINAPI *pCreate)(UINT) = d3d9 ? (void *)GetProcAddress(d3d9, "Direct3DCreate9") : NULL;
-    if (!pCreate) return 0;
-    IDirect3D9 *d3d = pCreate(D3D_SDK_VERSION);
-    if (!d3d) return 0;
-    WNDCLASSA wc = {0}; wc.lpfnWndProc = DefWindowProcA; wc.hInstance = GetModuleHandleA(NULL); wc.lpszClassName = "lsprobe";
-    RegisterClassA(&wc);
-    HWND hwnd = CreateWindowA("lsprobe", "ls", WS_OVERLAPPED, 0, 0, 8, 8, NULL, NULL, wc.hInstance, NULL);
-    D3DPRESENT_PARAMETERS pp = {0};
-    pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD; pp.BackBufferFormat = D3DFMT_UNKNOWN; pp.hDeviceWindow = hwnd;
-    IDirect3DDevice9 *dev = NULL;
-    HRESULT hr = IDirect3D9_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_NOWINDOWCHANGES, &pp, &dev);
-    if (FAILED(hr) || !dev) {
-        logmsg("tooltip: temp CreateDevice failed hr=0x%08lx", (unsigned long)hr);
-        IDirect3D9_Release(d3d); if (hwnd) DestroyWindow(hwnd); return 0;
-    }
-    void **vtbl = *(void ***)dev;
-    o_Reset    = (Reset_t)    vt_hook(vtbl, 16, (void *)hk_Reset);
-    o_EndScene = (EndScene_t) vt_hook(vtbl, 42, (void *)hk_EndScene);
-    IDirect3DDevice9_Release(dev);
-    IDirect3D9_Release(d3d);
-    if (hwnd) DestroyWindow(hwnd);
-    return 1;
 }
 static DWORD WINAPI tip_worker(LPVOID _) {
     gf_load(&g_tipFont, "Arial Unicode MS", NULL);                  // from the game's files; on failure Windows Arial
@@ -706,12 +743,12 @@ static DWORD WINAPI tip_worker(LPVOID _) {
         if (p_D3DXCreateFontA && p_D3DXCreateSprite) break;
     }
     if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("tooltip: no d3dx9_*.dll, no main menu tooltip"); return 0; }
-    for (int i = 0, pre = 0; i < 120; i++) {
-        if (!pre) pre = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre);
-        if (pre && GetModuleHandleA("d3d9.dll") && install_d3d_hooks()) { logmsg("main menu tooltip hooks installed"); return 0; }
+    g_d3dReady = 1;
+    for (int i = 0; i < 120; i++) {
+        if (iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre)) { logmsg("main menu tooltip and loading screen ratings ready"); return 0; }
         Sleep(1000);
     }
-    logmsg("tooltip: hooks not installed (no World::SimulatePre import or no d3d9.dll), no main menu tooltip");
+    logmsg("tooltip: no World::SimulatePre import, no main menu tooltip");
     return 0;
 }
 
@@ -734,14 +771,17 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_tipDX   = GetPrivateProfileIntW(L"MenuTooltip", L"DX", g_tipDX, ini);
     g_tipDY   = GetPrivateProfileIntW(L"MenuTooltip", L"DY", g_tipDY, ini);
     g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
+    g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 1, ini);
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.7.5%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.8.4%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
-    load_cache(); install();
+    load_cache(); install(); if (g_loadOn) install_wset();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     if (g_stats) CloseHandle(CreateThread(NULL, 0, tip_worker, NULL, 0, NULL));
+    mt_extra_draw = ls_draw; mt_extra_lost = ls_lost; mt_extra_reset = ls_reset;
+    mt_start(g_dir, ini);                            // the clock and the one device hook
     return TRUE;
 }
 
