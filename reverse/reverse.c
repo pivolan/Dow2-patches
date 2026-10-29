@@ -6,15 +6,16 @@
 // agile_vehicle) have a "reverse" step for paths up to 30 m, so a short move back is driven backwards by the game itself
 // (tested on the stand: Predator, 13-25 m, the hull keeps facing away from the path). A long move, or a queue of short
 // ones, is planned as a turn and drive forward (tested too). So the way is driven leg by leg: StepMeters (25) at a time,
-// the next leg when the squads have stopped at the end of the current one (a WM_TIMER on the game window = the game's
-// main thread). Every leg is the game's own right-click order (CommandProxy::DefaultAction) to a nearer point - sent the
+// the next leg LeadMeters (8) before the end of the current one, while still moving - no stop between the legs (a WM_TIMER
+// on the game window = the game's main thread). Every leg is the game's own right-click order (CommandProxy::DefaultAction) to a nearer point - sent the
 // normal way, simulated the same on every machine of the match: no desync, the other players don't need the DLL.
-// Where the path itself bends around an obstacle the game drives that bend forward - its own path planning.
+// The legs go straight toward the click: a wall in between stops the back-off there (as a Stop order does).
 //
 // Hook: CommandProxy::DefaultAction (vtable 0x110E514 #29, 0x00AF62E0, __thiscall: group, Target*, ?, Player*, queued).
 // Not a ground position, or the key not held: the game's own default action, untouched - and it cancels a back-off in
 // progress. So does losing the squads, or a leg that ends short (blocked, or the squads got another order).
-// Reverse.ini [Reverse]: Key=Ctrl|Alt|<virtual key code>, StepMeters=25 (5..30), re-read on every order.
+// Reverse.ini [Reverse]: Key=Ctrl|Alt|<virtual key code>, StepMeters=25 (5..30), LeadMeters=8 (0 = wait for the stop, as in
+// Reverse 3), re-read on every order.
 #include <windows.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -45,7 +46,7 @@ static GrpCtor_t p_gctor; static Thiscall0_t p_gdtor, p_tdtor; static PushBack_t
 // the rest of a long back-off: one leg at a time (a queue of legs is planned as turning around), the next one when the
 // squads have stopped at the end of the current leg. Main thread only: the click hook and a WM_TIMER of the same thread.
 static struct { int active, n, p4; void *self, *player, *ent[32]; DWORD id[32]; Vec3 to, legEnd, last; DWORD legAt, movedAt; } g_plan;
-static int g_key = VK_CONTROL; static float g_step = 25.0f;
+static int g_key = VK_CONTROL; static float g_step = 25.0f, g_lead = 8.0f;
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH];
 static void load_ini(void);
 
@@ -84,10 +85,10 @@ static int alive_center(Vec3 *c) {                  // the plan's entities that 
     g_plan.n = k; if (k) { c->x /= k; c->y /= k; c->z /= k; }
     return k;
 }
-static void issue_leg(const Vec3 *from) {            // a plain right-click order toward the end, at most one step
+static void issue_leg(const Vec3 *from, float step) {  // a plain right-click order toward the end, at most one step
     float dx = g_plan.to.x - from->x, dz = g_plan.to.z - from->z, d = sqrtf(dx * dx + dz * dz);
     if (d < 2.0f) { g_plan.active = 0; logmsg("reverse: arrived"); return; }
-    float k = d > g_step ? g_step / d : 1.0f;
+    float k = d > step ? step / d : 1.0f;
     Vec3 p = { from->x + dx * k, g_plan.to.y, from->z + dz * k };
     static unsigned char grp[0x200], tgt[0x80];
     memset(grp, 0, sizeof grp); memset(tgt, 0, sizeof tgt);
@@ -105,11 +106,19 @@ static VOID CALLBACK tick(HWND h, UINT m, UINT_PTR id, DWORD now) {
     if (!g_plan.active) return;
     Vec3 c; if (!alive_center(&c)) { g_plan.active = 0; logmsg("reverse: the squads are gone"); return; }
     float mx = c.x - g_plan.last.x, mz = c.z - g_plan.last.z;
-    if (mx * mx + mz * mz > 0.25f) { g_plan.last = c; g_plan.movedAt = now; return; }   // still moving
-    if (now - g_plan.movedAt < 1500) return;                       // turning the rear toward the path takes a moment
-    float ex = c.x - g_plan.legEnd.x, ez = c.z - g_plan.legEnd.z;
-    if (ex * ex + ez * ez > 8.0f * 8.0f) { g_plan.active = 0; logmsg("reverse: stopped short of the leg (blocked, or another order) - done"); return; }
-    issue_leg(&c);
+    float ex = c.x - g_plan.legEnd.x, ez = c.z - g_plan.legEnd.z, left2 = ex * ex + ez * ez;
+    if (mx * mx + mz * mz > 0.25f) {                                // still moving
+        g_plan.last = c; g_plan.movedAt = now;
+        // rolling legs: the next one while still backing in, LeadMeters before the end - no stop between the legs
+        // (the new point is still behind the hull and under 30 m away: the game keeps driving it backwards)
+        if (left2 < g_lead * g_lead) issue_leg(&c, g_step);
+        return;
+    }
+    if (now - g_plan.movedAt < 1000) return;                       // turning the rear toward the path takes a moment
+    // stopped short: the straight line runs into an obstacle, or the player stopped them (S, an ability): done. Going on
+    // around the obstacle by itself would also override the player's own Stop.
+    if (left2 > 8.0f * 8.0f) { g_plan.active = 0; logmsg("reverse: stopped short of the leg (blocked, or another order) - done"); return; }
+    issue_leg(&c, g_step);
 }
 
 static void __fastcall hk_defact(void *self, void *edx, void *group, void *target, int p4, void *player, int queued) {
@@ -177,8 +186,8 @@ static int install(void) {
 
 static DWORD WINAPI worker(LPVOID _) {
     for (int i = 0; i < 60; i++) { if (GetModuleHandleA("SimEngine.dll")) break; Sleep(500); }
-    logmsg("Reverse 2 start: hold %s and right-click the ground: back off there, %.0f m legs - hook %s",
-           g_key == VK_MENU ? "Alt" : g_key == VK_CONTROL ? "Ctrl" : "the key", g_step, install() ? "installed" : "NOT installed");
+    logmsg("Reverse 4 start: hold %s and right-click the ground: back off there, %.0f m legs, next one %.0f m before the end - hook %s",
+           g_key == VK_MENU ? "Alt" : g_key == VK_CONTROL ? "Ctrl" : "the key", g_step, g_lead, install() ? "installed" : "NOT installed");
     return 0;
 }
 
@@ -188,6 +197,8 @@ static void load_ini(void) {
     if (g_key <= 0 || g_key > 254) g_key = VK_CONTROL;
     int st = GetPrivateProfileIntW(L"Reverse", L"StepMeters", 25, g_ini); if (st < 5) st = 5; if (st > 30) st = 30;
     g_step = (float)st;
+    int ld = GetPrivateProfileIntW(L"Reverse", L"LeadMeters", 8, g_ini); if (ld < 0) ld = 0; if (ld > st - 3) ld = st - 3;
+    g_lead = (float)ld;
 }
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     if (reason != DLL_PROCESS_ATTACH) return TRUE;

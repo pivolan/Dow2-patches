@@ -53,8 +53,8 @@ matchtimer/
 reverse/
     Backing off like the reverse order of Company of Heroes: hold Ctrl and right-click the ground, the selected squads
     back off to the point (also on the minimap), vehicles driving backwards instead of turning around: the game's
-    own turn plans reverse on paths up to 30 m, so the way is driven in 25 m legs, the next one when the squads stop. Only the point of the player's own right-click is moved: the order is the normal one, nothing in the
-    simulation changes, no desync, the other players don't need it. Reverse.ini: Key, StepMeters.
+    own turn plans reverse on paths up to 30 m, so the way is driven in 25 m legs, the next one 8 m before the end of the current, without stopping. Only the point of the player's own right-click is moved: the order is the normal one, nothing in the
+    simulation changes, no desync, the other players don't need it. Reverse.ini: Key, StepMeters, LeadMeters.
 
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
