@@ -440,7 +440,7 @@ static void cover_update(void) {
 static void cover(const wchar_t *line) { if (line) wcsncpy(g_coverLine, line, 159); g_coverWant = 1; }
 
 // ---------------- saved choice: race / chapter / hero picked by the player ----------------
-int g_race = -1, g_chapter = -1, g_hero = -1, g_random; static volatile int g_heroCount; static volatile int g_curRace = -1, g_curChapter = -1, g_curHero = -1; static void *g_heroSelf; static int g_heroFlags; static volatile DWORD g_autoSelTick, g_lastFsTick; static volatile int g_applyMM, g_mmApplied; static volatile DWORD g_heroAt;
+int g_race = -1, g_chapter = -1, g_hero = -1, g_random; static volatile int g_heroCount, g_raceCount; static volatile int g_curRace = -1, g_curChapter = -1, g_curHero = -1; static void *g_heroSelf; static int g_heroFlags; static volatile DWORD g_autoSelTick, g_lastFsTick; static volatile int g_applyMM, g_mmApplied; static volatile DWORD g_heroAt;
 static wchar_t g_ini[MAX_PATH];   // g_heroCount: heroes of the race on screen (from Receive_PopulateHeroList)
 static void save_choice(void) {
     wchar_t b[16];
@@ -789,7 +789,14 @@ static char __fastcall inv_hook(void *self, void *edx, const char *method, int f
         }
         else if (!strcmp(method, "Receive_PopulateDropDownListWithImage") && count >= 4 &&      // the race list (race_*_x icons) arrives before
                  ((args[3].type == GFX_WSTRING && args[3].v.ws && wcsstr(args[3].v.ws, L"\\race_")) ||   // the race selection and the hero list
-                  (args[3].type == GFX_STRING && args[3].v.s && strstr(args[3].v.s, "\\race_")))) { g_heroSelf = self; g_heroFlags = flags; }
+                  (args[3].type == GFX_STRING && args[3].v.s && strstr(args[3].v.s, "\\race_")))) {
+            g_heroSelf = self; g_heroFlags = flags;
+            int nr = 0; for (unsigned i = 0; i < count; i++) {                // race icons = races in the drop-down (Random is a button)
+                if (args[i].type == GFX_WSTRING && args[i].v.ws && wcsstr(args[i].v.ws, L"\\race_") && !wcsstr(args[i].v.ws, L"random")) nr++;
+                else if (args[i].type == GFX_STRING && args[i].v.s && strstr(args[i].v.s, "\\race_") && !strstr(args[i].v.s, "random")) nr++;
+            }
+            if (nr > 0) g_raceCount = nr;
+        }
         else if (!strcmp(method, "Receive_SetDropDownSelection") && count == 2 && args[0].type == GFX_NUMBER && args[1].type == GFX_NUMBER) {
             int dd = (int)args[0].v.num, v = (int)args[1].v.num;
             if (self == g_heroSelf) { if (dd == 0) { if (v != g_curRace) g_curChapter = -1; g_curRace = v; } else if (dd == 1) g_curChapter = v; }
@@ -862,7 +869,9 @@ static void __fastcall fs_hook(void *self, void *edx, void *movie, const char *c
                 }
             }
         }
-        if (!g_sending && strstr(cmd, "hero_selection_mc.") && args) {            // the player's own pick - remember it
+        // the player's own pick - remember it (not while we set up the lobby ourselves: the panel answers our hero pick with its
+        // own OnSelectHero, which turned the saved Random off after a random pick)
+        if (!g_sending && g_state != S_SETUP_HERO && strstr(cmd, "hero_selection_mc.") && args) {
             int a = -1, b = -1;
             if (ends_with(cmd, ".OnClickRandom")) { if (!g_random) { g_random = 1; save_choice(); logmsg("choice: random race and hero"); } }
             else if (ends_with(cmd, ".OnSelectDropDownItem") && sscanf(args, "%d;%d", &a, &b) == 2) {
@@ -1069,12 +1078,21 @@ static void tick(void) {
     case S_SETUP_HERO: {                                              // hero selection pops up in the lobby: accept the default once
         static int step; if (in_state() < 300) step = 0;
         static DWORD heroT;
-        if (step == 0 && in_state() > 1500 && g_random) {             // the player picked Random: the lobby's own Random option, not our pick
-            step = 2; heroT = in_state(); logmsg("lobby: random race and hero"); fs(".hero_selection_mc.OnClickRandom", "");
-        }
+        // the player picked Random: 0.26 picks a race and a hero itself and selects them like a saved choice. The lobby's own
+        // Random (OnClickRandom, 0.25) broke every match on the loading screen (message box, back to the menu, one game crashed)
+        static int randNow, keepRace, keepChapter, keepHero;
         if (step == 0 && in_state() > 1500) {                         // a fresh join needs a moment; the engine brings the race from Find a Game
             step = 1; if (g_lobbyRace >= 0) g_curRace = g_lobbyRace; int shown = g_curRace;
+            randNow = g_random && g_raceCount > 0;
+            if (randNow) {
+                unsigned x = GetTickCount() ^ (unsigned)(g_mySteam * 2654435761u); x = x * 1103515245u + 12345u;
+                keepRace = g_race; keepChapter = g_chapter; keepHero = g_hero;
+                g_race = (int)((x >> 16) % (unsigned)g_raceCount); g_chapter = -1; g_hero = -1;
+                logmsg("lobby: random race %d of %d", g_race, g_raceCount);
+                g_curRace = g_curChapter = -1;                        // always select it: the lobby may still hold the engine's Random
+            }
             int rc = apply_race(); heroT = in_state() + (rc ? 1000 : 300);
+            if (randNow) { g_race = keepRace; g_chapter = keepChapter; g_hero = keepHero; }
             if (!rc && g_curHero == g_hero) heroT = 0;                   // already as saved: don't touch the panel at all
             logmsg("lobby: race %d (saved %d), hero %d (saved %d)%s", shown, g_race, g_curHero, g_hero, rc ? " - switching race" : "");
         }
@@ -1082,7 +1100,7 @@ static void tick(void) {
             step = 2;
             // MMFind.ini [Choice] RandomHero=1 (launcher: "Random hero of your race"): a random one of the race's heroes, the
             // saved choice stays as it is
-            if (!g_random && GetPrivateProfileIntW(L"Choice", L"RandomHero", 0, g_ini) && g_heroCount > 0) {
+            if ((randNow || (!g_random && GetPrivateProfileIntW(L"Choice", L"RandomHero", 0, g_ini))) && g_heroCount > 0) {
                 int keep = g_hero; unsigned x = GetTickCount() ^ (unsigned)(g_mySteam * 2654435761u); x = x * 1103515245u + 12345u;
                 g_hero = (int)((x >> 16) % (unsigned)g_heroCount);
                 logmsg("lobby: random hero %d of %d", g_hero, g_heroCount); apply_hero(); g_hero = keep; heroT = in_state();
@@ -1241,7 +1259,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.25 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.26 start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;

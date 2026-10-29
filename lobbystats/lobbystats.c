@@ -197,7 +197,7 @@ static volatile DWORD g_lobbyAt;                            // a lobby list came
 static unsigned long long g_localId;                        // own ID (from the slot the game marked as own)
 static int g_maxPlayers;                                    // player seats; positions beyond are observers
 // 0.8.5: a sound when someone comes into the lobby while the game is in the background (asked by players: waiting in
-// alt-tab). The game mutes itself in the background, so it is the Windows notification sound (PlaySound), not the game's;
+// alt-tab). The game mutes itself in the background, so it is our own PlaySound (join_sound.h), not through the game;
 // the taskbar button flashes too. Only this player's PC: nothing goes into the match. LobbyStats.ini [Lobby] JoinSound:
 // 1 = in the background (default), 2 = always, 0 = off.
 static int g_joinSound = 1; static volatile LONG g_newLobby = 1;
@@ -208,16 +208,31 @@ static BOOL CALLBACK find_game_wnd(HWND w, LPARAM out) {
     if (pid == GetCurrentProcessId() && IsWindowVisible(w) && !GetWindow(w, GW_OWNER)) { *(HWND *)out = w; return FALSE; }
     return TRUE;
 }
+// 0.8.6: the game's own alert sound (join_sound.h) played from memory, not a Windows sound alias: with the "No sounds" scheme
+// or a cleared Notification sound the alias was silent; the alias is only the fallback now. [Lobby] SoundFile = own .wav
+#include "join_sound.h"
+static wchar_t g_soundFile[MAX_PATH];
 static void join_alert(const wchar_t *who) {
     HWND fg = GetForegroundWindow(); DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
     int behind = pid != GetCurrentProcessId();
-    if (!g_joinSound || (g_joinSound == 1 && !behind)) return;
-    if (!PlaySoundW(L"Notification.Default", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT) &&
-        !PlaySoundW(L"SystemNotification", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT)) MessageBeep(MB_ICONASTERISK);
+    char n8[200]; WideCharToMultiByte(CP_UTF8, 0, who, -1, n8, sizeof n8, NULL, NULL);
+    if (!g_joinSound || (g_joinSound == 1 && !behind)) {
+        logmsg("lobby: %s came in - no sound (%s)", n8, g_joinSound ? "game in front, JoinSound=1" : "JoinSound=0"); return;
+    }
+    static DWORD last; DWORD now = GetTickCount();
+    if (last && now - last < 1500) { logmsg("lobby: %s came in - sound already playing", n8); return; }   // a party coming in at once
+    last = now;
+    const char *how = "game alert sound";
+    if (g_soundFile[0] && PlaySoundW(g_soundFile, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT)) how = "SoundFile";
+    else if (!PlaySoundW((LPCWSTR)JOIN_WAV, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT)) {
+        how = "Windows notification sound";
+        if (!PlaySoundW(L"Notification.Default", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT) &&
+            !PlaySoundW(L"SystemNotification", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT)) { MessageBeep(MB_ICONASTERISK); how = "beep"; }
+    }
     HWND w = NULL; EnumWindows(find_game_wnd, (LPARAM)&w);
     if (w) { FLASHWINFO f = { sizeof f, w, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0 }; FlashWindowEx(&f); }
-    char n8[200]; WideCharToMultiByte(CP_UTF8, 0, who, -1, n8, sizeof n8, NULL, NULL);
-    logmsg("lobby: %s came in - sound%s", n8, behind ? " (game in the background)" : " (JoinSound=2)");
+    logmsg("lobby: %s came in - %s%s%s", n8, how, behind ? " (game in the background)" : " (JoinSound=2)",
+           w ? "" : ", no game window to flash");
 }
 
 // ---------- hook ----------
@@ -417,11 +432,14 @@ static int g_tipDX = 3, g_tipDY = 4, g_tipMinW = 300;
 static char g_screen[8][64]; static int g_nscreen;
 static void screen_event(const char *method, GFxValue *args, unsigned count) {
     const char *swf = count >= 1 && args[0].type == GFX_STRING && args[0].v.s ? args[0].v.s : NULL;
-    InterlockedExchange(&g_newLobby, 1);                    // any screen change: the next roster is a new lobby, nobody "joined"
     if (!strcmp(method, "Receive_ActivateFirstScreen")) g_nscreen = 0;
     if (!strcmp(method, "Receive_TransitionBackward")) { if (g_nscreen > 1) g_nscreen--; }
     else if (swf && g_nscreen < 8) { lstrcpynA(g_screen[g_nscreen++], swf, 64); }
     g_front = g_nscreen && !strcmp(g_screen[g_nscreen - 1], "main_menu.swf");
+    // the next roster is a new lobby (nobody "joined") only once we are out of the lobby screen. 0.8.5 did it on any
+    // screen event, so a screen pushed inside the lobby made the next join silent ("works every other time")
+    int inLobby = 0; for (int k = 0; k < g_nscreen; k++) if (!strcmp(g_screen[k], "game_setup_movie.swf")) inLobby = 1;
+    if (!inLobby) InterlockedExchange(&g_newLobby, 1);
     logmsg("screen: %s(%s) -> %s, menu tooltip %s", method + 8, swf ? swf : "", g_nscreen ? g_screen[g_nscreen - 1] : "?", g_front ? "on" : "off");
 }
 static void decorate_gamertag(GFxValue *args) {
@@ -807,10 +825,14 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
     g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 1, ini);
     g_joinSound = GetPrivateProfileIntW(L"Lobby", L"JoinSound", 1, ini);
+    GetPrivateProfileStringW(L"Lobby", L"SoundFile", L"", g_soundFile, MAX_PATH, ini);
+    if (g_soundFile[0] && !wcschr(g_soundFile, L':')) {                 // relative to the add-on folder
+        wchar_t t[MAX_PATH]; _snwprintf(t, MAX_PATH - 1, L"%ls%ls", g_dir, g_soundFile); t[MAX_PATH - 1] = 0; wcscpy(g_soundFile, t);
+    }
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.8.5%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.8.6, join sound %d%s", g_joinSound, g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install(); if (g_loadOn) install_wset();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
