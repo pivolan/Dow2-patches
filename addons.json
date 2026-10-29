@@ -1,1 +1,57 @@
-{}
+{
+  "_readme": "What the launcher gives players. Raise an add-on's version and merge to main: the server builds and publishes it within minutes. See README, Publishing.",
+  "lobbystats": {
+    "version": "0.8.4",
+    "dll": "LobbyStats.dll"
+  },
+  "obsfix": {
+    "version": "1",
+    "dll": "ObsFix.dll"
+  },
+  "frameprobe": {
+    "version": "off",
+    "dll": "FrameProbe.dll"
+  },
+  "eliteai": {
+    "version": "0.7",
+    "dll": "EliteAI.dll",
+    "files": {
+      "EliteAI/main.ai": "eliteai/mod/main.ai",
+      "EliteAI/append/scar/elite/elite.scar": "eliteai/mod/append/scar/elite/elite.scar"
+    },
+    "default": false,
+    "name": {
+      "en": "New AI (test, skirmish only)",
+      "ru": "Новый ИИ (тест, только скирмиш)",
+      "es": "IA nueva (prueba, solo escaramuza)",
+      "fr": "Nouvelle IA (test, escarmouche seulement)",
+      "de": "Neue KI (Test, nur Gefecht)"
+    },
+    "description": {
+      "en": "Our rework of Elite AI: the computer army fights together, holds its target and stops running between points one squad at a time. In the skirmish setup pick \"Add NEW AI Computer\" (it takes the place of Normal). Online games always use Elite own AI (otherwise the match would desync), so you can leave it on. Work in progress - tell us in the chat how it plays.",
+      "ru": "Наша переработка ИИ Elite: армия компьютера воюет вместе, держит цель и не бегает по точкам поотрядно. В настройке скирмиша выберите «Add NEW AI Computer» / «Добавить НОВЫЙ ИИ» (он встаёт на место Normal). В онлайне всегда работает обычный ИИ Elite (иначе матч рассинхронится), поэтому галочку можно не снимать. Это тест — расскажите в чате, как он играет.",
+      "es": "Nuestra versión de la IA de Elite: el ejército del ordenador lucha unido y mantiene su objetivo. En la escaramuza elige \"Add NEW AI Computer\" (en lugar de Normal). En línea siempre se usa la IA de Elite.",
+      "fr": "Notre refonte de l IA d Elite : l armée de l ordinateur combat groupée et tient son objectif. En escarmouche, choisissez \"Add NEW AI Computer\" (à la place de Normal). En ligne, c est toujours l IA d Elite.",
+      "de": "Unsere Überarbeitung der Elite-KI: die Armee des Computers kämpft geschlossen und hält ihr Ziel. Im Gefecht \"Add NEW AI Computer\" wählen (statt Normal). Online immer die Elite-KI."
+    }
+  },
+  "reverse": {
+    "version": "4",
+    "dll": "Reverse.dll",
+    "default": false,
+    "name": {
+      "en": "Reverse (test)",
+      "ru": "Задний ход (тест)",
+      "es": "Marcha atrás (prueba)",
+      "fr": "Marche arrière (test)",
+      "de": "Rückwärtsgang (Test)"
+    },
+    "description": {
+      "en": "Like Company of Heroes: hold Ctrl and right-click behind your units (or on the minimap) - vehicles back off to that point driving backwards, front armour to the enemy, instead of turning around. Works through the game's own orders, nothing changes for the other players.",
+      "ru": "Как в Company of Heroes: зажмите Ctrl и щёлкните правой кнопкой позади отряда (или по миникарте) — техника отходит туда задом, лобовой бронёй к врагу, а не разворачивается. Работает через обычные приказы игры, для остальных игроков ничего не меняется.",
+      "es": "Como en Company of Heroes: mantén Ctrl y haz clic derecho detrás - los vehículos retroceden sin girar.",
+      "fr": "Comme dans Company of Heroes : maintenez Ctrl et clic droit derrière - les véhicules reculent sans faire demi-tour.",
+      "de": "Wie in Company of Heroes: Ctrl halten und hinter die Einheiten rechtsklicken - Fahrzeuge fahren rückwärts statt zu wenden."
+    }
+  }
+}
