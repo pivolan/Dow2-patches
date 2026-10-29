@@ -1,5 +1,5 @@
 // Reverse.dll - backing off like the reverse order of Company of Heroes, for Dawn of War II: Retribution 3.19 (Elite).
-// Hold the key (Alt by default) and right-click the ground (or the minimap): the selected squads back off to the point,
+// Hold the key (Ctrl by default) and right-click the ground (or the minimap): the selected squads back off to the point,
 // vehicles driving backwards with the front armour to the enemy instead of turning around.
 //
 // Why that reverses vehicles, with no change to the game: their turn plans (attrib turn_plan/tank, vehicles,
@@ -14,7 +14,7 @@
 // Hook: CommandProxy::DefaultAction (vtable 0x110E514 #29, 0x00AF62E0, __thiscall: group, Target*, ?, Player*, queued).
 // Not a ground position, or the key not held: the game's own default action, untouched - and it cancels a back-off in
 // progress. So does losing the squads, or a leg that ends short (blocked, or the squads got another order).
-// Reverse.ini [Reverse]: Key=Alt|Ctrl|<virtual key code>, StepMeters=25 (5..30), re-read on every order.
+// Reverse.ini [Reverse]: Key=Ctrl|Alt|<virtual key code>, StepMeters=25 (5..30), re-read on every order.
 #include <windows.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -45,7 +45,7 @@ static GrpCtor_t p_gctor; static Thiscall0_t p_gdtor, p_tdtor; static PushBack_t
 // the rest of a long back-off: one leg at a time (a queue of legs is planned as turning around), the next one when the
 // squads have stopped at the end of the current leg. Main thread only: the click hook and a WM_TIMER of the same thread.
 static struct { int active, n, p4; void *self, *player, *ent[32]; DWORD id[32]; Vec3 to, legEnd, last; DWORD legAt, movedAt; } g_plan;
-static int g_key = VK_MENU; static float g_step = 25.0f;
+static int g_key = VK_CONTROL; static float g_step = 25.0f;
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH];
 static void load_ini(void);
 
@@ -183,9 +183,9 @@ static DWORD WINAPI worker(LPVOID _) {
 }
 
 static void load_ini(void) {
-    wchar_t k[16]; GetPrivateProfileStringW(L"Reverse", L"Key", L"Alt", k, 16, g_ini);
+    wchar_t k[16]; GetPrivateProfileStringW(L"Reverse", L"Key", L"Ctrl", k, 16, g_ini);
     g_key = !lstrcmpiW(k, L"Alt") ? VK_MENU : !lstrcmpiW(k, L"Ctrl") ? VK_CONTROL : (int)wcstol(k, NULL, 0);
-    if (g_key <= 0 || g_key > 254) g_key = VK_MENU;
+    if (g_key <= 0 || g_key > 254) g_key = VK_CONTROL;
     int st = GetPrivateProfileIntW(L"Reverse", L"StepMeters", 25, g_ini); if (st < 5) st = 5; if (st > 30) st = 30;
     g_step = (float)st;
 }

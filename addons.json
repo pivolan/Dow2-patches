@@ -17,7 +17,7 @@
     "dll": "FrameProbe.dll"
   },
   "reverse": {
-    "version": "2",
+    "version": "3",
     "dll": "Reverse.dll",
     "default": false,
     "name": {
@@ -28,11 +28,11 @@
       "de": "Rückwärtsgang (Test)"
     },
     "description": {
-      "en": "Like Company of Heroes: hold Alt and right-click behind your units (or on the minimap) - vehicles back off to that point driving backwards, front armour to the enemy, instead of turning around. Works through the game's own orders, nothing changes for the other players.",
-      "ru": "Как в Company of Heroes: зажмите Alt и щёлкните правой кнопкой позади отряда (или по миникарте) — техника отходит туда задом, лобовой бронёй к врагу, а не разворачивается. Работает через обычные приказы игры, для остальных игроков ничего не меняется.",
-      "es": "Como en Company of Heroes: mantén Alt y haz clic derecho detrás - los vehículos retroceden sin girar.",
-      "fr": "Comme dans Company of Heroes : maintenez Alt et clic droit derrière - les véhicules reculent sans faire demi-tour.",
-      "de": "Wie in Company of Heroes: Alt halten und hinter die Einheiten rechtsklicken - Fahrzeuge fahren rückwärts statt zu wenden."
+      "en": "Like Company of Heroes: hold Ctrl and right-click behind your units (or on the minimap) - vehicles back off to that point driving backwards, front armour to the enemy, instead of turning around. Works through the game's own orders, nothing changes for the other players.",
+      "ru": "Как в Company of Heroes: зажмите Ctrl и щёлкните правой кнопкой позади отряда (или по миникарте) — техника отходит туда задом, лобовой бронёй к врагу, а не разворачивается. Работает через обычные приказы игры, для остальных игроков ничего не меняется.",
+      "es": "Como en Company of Heroes: mantén Ctrl y haz clic derecho detrás - los vehículos retroceden sin girar.",
+      "fr": "Comme dans Company of Heroes : maintenez Ctrl et clic droit derrière - les véhicules reculent sans faire demi-tour.",
+      "de": "Wie in Company of Heroes: Ctrl halten und hinter die Einheiten rechtsklicken - Fahrzeuge fahren rückwärts statt zu wenden."
     }
   }
 }
