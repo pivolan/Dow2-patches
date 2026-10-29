@@ -51,10 +51,10 @@ cgnumbers/
     the game's Direct3D9 (DXVK-safe). Stage 1 proves the render path; reading squads/groups is stage 2.
 
 matchtimer/
-    Match clock (experimental). MM:SS of game time since the match started (pauses not counted), above the
-    minimap like the campaign timers, in the game's own font (read from its files), through Direct3D9.
-    Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
-    picked up while the game runs.
+    Match clock, built into LobbyStats.dll (no DLL of its own). MM:SS of game time since the match started (pauses
+    not counted), in the game's own font (read from its files), through Direct3D9; off as soon as the match ends.
+    Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in LobbyStats.ini, section
+    [MatchTimer], picked up while the game runs.
 
 eliteai/
     The new AI (launcher add-on "New AI (test, skirmish only)"). EliteAI.dll hooks lua_load in LuaConfig.dll and puts

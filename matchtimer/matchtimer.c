@@ -1,4 +1,4 @@
-// MatchTimer.dll - match clock (MM:SS of game time) in Dawn of War II: Retribution 3.19 (Elite).
+// matchtimer.c - match clock (MM:SS of game time) in Dawn of War II: Retribution 3.19 (Elite), inside LobbyStats.dll.
 //
 // Game time: the clock runs while the simulation ticks and stands still while it doesn't (pause, offline game
 // minimized, "waiting for players"), so every player of a match sees the same time, the replay too. A minimized
@@ -13,8 +13,9 @@
 // Reset is hooked too, so the font lets go of the device on alt-tab / resolution change.
 // Read-only: nothing in the simulation changes, so no desync; only the player with the DLL sees the clock.
 //
-// Built two ways: MatchTimer.dll on its own, or with -DMT_EMBED inside LobbyStats.dll (one device hook for both: the
-// clock, the main menu tooltip and the ratings on the loading screen; settings in LobbyStats.ini, section [MatchTimer]).
+// Built with -DMT_EMBED inside LobbyStats.dll only (one device hook for the clock, the main menu box and the cooldown
+// numbers; settings in LobbyStats.ini, section [MatchTimer]). The stand-alone MatchTimer.dll is gone; an old hand-
+// installed copy is still recognised and left to draw the clock alone.
 #include <windows.h>
 #include <psapi.h>
 #include <stdio.h>
@@ -585,18 +586,5 @@ void mt_start(const wchar_t *dir, const wchar_t *ini) {
     logmsg("MatchTimer v3 inside LobbyStats, clock %s", g_enabled ? "on" : "off ([MatchTimer] Enabled=0)");
     if (already_loaded("MatchTimer")) { g_clockOff = 1; logmsg("a stand-alone MatchTimer.dll is active too: it draws the clock, not us"); }
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));   // the device hook is needed for the rest even without the clock
-}
-#else
-BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
-    if (reason != DLL_PROCESS_ATTACH) return TRUE;
-    DisableThreadLibraryCalls(h);
-    GetModuleFileNameW(h, g_log, MAX_PATH); wchar_t *sl = wcsrchr(g_log, L'\\'); if (sl) sl[1] = 0; else g_log[0] = 0;
-    wcscpy(g_ini, g_log); wcscat(g_ini, L"MatchTimer.ini"); wcscat(g_log, L"MatchTimer.log");
-    load_ini();
-    logmsg("MatchTimer v3");
-    if (already_loaded("MatchTimer")) { logmsg("another MatchTimer copy is already active in this game, this one stays idle"); return TRUE; }
-    if (!g_enabled) { logmsg("disabled in MatchTimer.ini"); return TRUE; }
-    CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
-    return TRUE;
 }
 #endif

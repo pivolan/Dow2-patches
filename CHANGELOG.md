@@ -16,6 +16,8 @@ The version of the set lives only in `VERSION`; each DLL still writes its own ve
   - loaded late by the Elite injector (the main menu is up by then): the own name comes from Steam and gets its rating.
   - the match clock (and the numbers) go off when the match ends - the loading screen out of the match is built,
     the game is decided or the match scripts stop - instead of staying on the frozen loading screen.
+- MatchTimer.dll on its own is gone (the clock has been inside LobbyStats.dll since 0.8.0); an old hand-installed copy
+  is still recognised and left to draw the clock alone.
 
 ## 0.1.2 — 2026-10-28
 - MatchTimer v2: the digits in the game's own Caslon Antique New, read from the player's game files
