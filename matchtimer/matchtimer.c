@@ -40,12 +40,12 @@ static void logmsg(const char *fmt, ...) {
 }
 
 // ---------- settings: MatchTimer.ini, re-read while the game runs when the file changes ----------
-static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 20, g_onlineOnly = 0;
-static DWORD g_color = 0xFFF0EEE4, g_outline = 0;
+static int g_enabled = 1, g_x = 50, g_y = 8, g_align = 1, g_size = 21, g_onlineOnly = 0;
+static DWORD g_color = 0xFFFFF8F0, g_outline = 0;
 // Style=1: left of the Menu button. The button sits in the top right corner and scales with the screen height
 // (the same in every locale), so the clock is placed from the right edge in 1/1000 of the screen height.
 // Style=2: the same place, in a box drawn like the game's own (the "Fog of War Off" box of the replay panel).
-static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = 131, g_menuY = 18;
+static int g_style = 2, g_bold = 0, g_shadow = 1, g_menuX = -1, g_menuY = 18;   // MenuX -1 = by the aspect ratio
 // Anchor=1 (Style=1/2): right of the victory points bar instead; VpX = the left edge from the screen centre.
 static int g_anchor = 0, g_vpX = 126;      // the look siritos chose (28.10): a box left of the Menu button
 // Anchor=2: above the minimap (its frame starts 221/1000 H above the bottom edge): left edge MapX, middle MapY above
@@ -53,7 +53,7 @@ static int g_anchor = 0, g_vpX = 126;      // the look siritos chose (28.10): a 
 static int g_mapX = 7, g_mapY = 239;
 // opacity of the outline in Style=1/2, 0..255: 144 = a soft halo, 255 = a crisp outline like the campaign objective timers
 static int g_outlineAlpha = 160;
-static char g_face[64] = "Arial";
+static char g_face[64] = "Caslon Antique New";
 // the game's own font, read from its files (gamefont.h); Font= naming it draws the digits with it
 #define GAME_FONT "Caslon Antique New"
 static int g_gfWidth = 100;                        // GameFontWidth=: horizontal scale of the game font's digits, percent
@@ -73,14 +73,14 @@ static void load_ini(void) {
     g_x          = ini_int(L"X", 50, 0, 100);
     g_y          = ini_int(L"Y", 8, 0, 100);
     g_align      = ini_int(L"Align", 1, 0, 2);
-    g_size       = ini_int(L"Size", 20, 8, 200);
+    g_size       = ini_int(L"Size", 21, 8, 200);
     g_onlineOnly = ini_int(L"OnlineOnly", 0, 0, 1);
-    g_color      = ini_color(L"Color", L"F0EEE4");
+    g_color      = ini_color(L"Color", L"FFF8F0");
     g_outline    = ini_color(L"Outline", L"");
     g_style      = ini_int(L"Style", 2, 0, 2);
     g_bold       = ini_int(L"Bold", 0, 0, 1);
     g_shadow     = ini_int(L"Shadow", 1, 0, 1);
-    g_menuX      = ini_int(L"MenuX", 131, 0, 2000);
+    g_menuX      = ini_int(L"MenuX", -1, -1, 2000);
     g_menuY      = ini_int(L"MenuY", 18, 0, 1000);
     g_anchor     = ini_int(L"Anchor", 0, 0, 2);
     g_mapX       = ini_int(L"MapX", 7, 0, 2000);
@@ -88,7 +88,7 @@ static void load_ini(void) {
     g_vpX        = ini_int(L"VpX", 126, -1000, 2000);
     g_outlineAlpha = ini_int(L"OutlineAlpha", 160, 0, 255);
     g_gfWidth    = ini_int(L"GameFontWidth", 100, 50, 200);
-    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Arial", f, 64, g_ini);
+    wchar_t f[64]; GetPrivateProfileStringW(L"MatchTimer", L"Font", L"Caslon Antique New", f, 64, g_ini);
     WideCharToMultiByte(CP_ACP, 0, f, -1, g_face, sizeof g_face, NULL, NULL);
 }
 static void reload_ini(DWORD now) {
@@ -307,7 +307,11 @@ static void draw(IDirect3DDevice9 *dev, DWORD now) {
             int left = g_anchor == 2 ? g_mapX * H / 1000 : W / 2 + g_vpX * H / 1000;
             SetRect(&box, left, top, left + bw, top + bh);
         } else {
-            int right = W - g_menuX * H / 1000;
+            // the Menu button's left edge, from the right in 1/1000 H, depends on the aspect ratio: 124 at 16:9 (2560x1440),
+            // 147 at 16:10 (1280x800) - a fixed MenuX ran into the button at 16:10. Box right edge = that + a small gap.
+            int mx = g_menuX;
+            if (mx < 0) { mx = 124 + 8 + (int)(132 * (1.7778 - (double)W / H)); if (mx < 120) mx = 120; if (mx > 200) mx = 200; }
+            int right = W - mx * H / 1000;
             SetRect(&box, right - bw, top, right, top + bh);
         }
         r = box;
