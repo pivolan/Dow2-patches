@@ -1,0 +1,34 @@
+-- EliteAI combat director, SCAR side: appended by EliteAI.dll to Elite's elite.scar (loaded in every game).
+-- The AI scripts can't give orders themselves (no Command_* in the AI state); the new AI queues them in EliteAI.dll,
+-- this rule takes the queue once a second and issues them. No new AI in the game = empty queue = nothing happens.
+local _take = eliteai_take_orders or (string and string.eliteai_take_orders)
+local _log = eliteai_log or (string and string.eliteai_log) or function() end
+
+function EliteAI_ExecuteOrders()
+	if not _take then return end
+	local q = _take()
+	if not q or q == "" then return end
+	local sg = SGroup_CreateIfNotFound("eliteai_director")
+	local done, bad = 0, 0
+	for id, x, y, z, mode in string.gmatch(q, "(%d+) (%-?[%d%.]+) (%-?[%d%.]+) (%-?[%d%.]+) (%d+);") do
+		local wid = tonumber(id)
+		-- a squad that died since the AI queued the order: Squad_FromWorldID on it is an engine assert (in -dev a modal
+		-- dialog that stops the game) - check first
+		local alive = Squad_IsValid and Squad_IsValid(wid)
+		local ok = alive and pcall(function()
+			local sq = Squad_FromWorldID(wid)
+			SGroup_Clear(sg)
+			SGroup_Add(sg, sq)
+			local pos = World_Pos(tonumber(x), tonumber(y), tonumber(z))
+			local m = tonumber(mode)
+			if m == 1 then Cmd_MoveToPos(sg, pos)
+			elseif m == 2 then Cmd_AttackMovePos(sg, pos)
+			elseif m == 3 then Cmd_Retreat(sg)
+			end
+		end)
+		if ok then done = done + 1 elseif alive then bad = bad + 1; EliteAI_LastBadMode = mode end
+	end
+	if bad > 0 and not EliteAI_ExecWarned then EliteAI_ExecWarned = true; _log("director: some orders failed", bad, "of", done + bad, "last mode", tostring(EliteAI_LastBadMode)) end
+end
+
+if _take and Rule_AddInterval then Rule_AddInterval(EliteAI_ExecuteOrders, 1) end

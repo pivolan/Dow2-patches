@@ -50,6 +50,14 @@ matchtimer/
     Shown in every game, OnlineOnly=1 keeps it to live multiplayer. Look and position in MatchTimer.ini,
     picked up while the game runs.
 
+eliteai/
+    The new AI (launcher add-on "New AI (test, skirmish only)"). EliteAI.dll hooks lua_load in LuaConfig.dll and puts
+    eliteai/mod/main.ai into Elite's default.ai right before its InitializeAI() call (the army fights together, holds
+    its target, waits for the others at the rally point), and appends the order queue to elite.scar. Elite's archives
+    are not touched. In a skirmish the Normal computer gets it (EliteAI.ini [Lua] NewAI=all|none|normal|<player ids>);
+    only in single-player games (by the game type, [*(0x01335A78)+0x118]): online and in replays it stays out - the
+    scripts run on every machine of a match, one player with it would desync everyone.
+
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
 
@@ -63,6 +71,8 @@ the result to the team's Telegram thread. Players get it on the next launcher re
 - A version is published once and never changes: new code needs a new version (`0.7.1`, `0.8.0`, …). Pushing code
   without raising the version publishes nothing.
 - Going back = put the old version back into `addons.json` (it is already in the store, nothing is rebuilt).
+- `files` ships more than the DLL: `{"EliteAI/main.ai": "eliteai/mod/main.ai"}` = path under `Elite_DLLs` → file in
+  the repo (`.ai`/`.scar`/`.lua` are syntax-checked with luac5.1 first).
 - Optional fields override the launcher's texts: `name`, `description` (`{"en": …, "ru": …}`), `default` (on for
   new players), `conflicts`, `options`. A new add-on needs `dll`, `name` and `description`.
 - Only add-ons listed here are touched; the others in the launcher (automatch, relay) are managed elsewhere.

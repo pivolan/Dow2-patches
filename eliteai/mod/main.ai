@@ -1,0 +1,286 @@
+-- EliteAI: our module, inserted by EliteAI.dll into Elite's default.ai right before its final InitializeAI() call.
+-- Elite's files stay as they are; we only wrap/override a few functions, and only for AI players with the new logic on.
+-- On/off per AI player (EliteAI.on): in normal games for the Normal computer; in tests EliteAI.ini [Lua] NewAI decides
+-- (all | none | normal | <player ids, e.g. 1000>) so one match can pit the new logic against Elite's (A/B).
+-- Every tuning value can be overridden from EliteAI.ini [Lua] without rebuilding (EliteAI.num("Key", default)).
+
+EliteAI = { version = "0.5" }
+
+-- C functions from EliteAI.dll: global, or (AI scripts run in their own environment) via the shared string table
+local G0 = getfenv and getfenv(0) or {}
+eliteai_log = eliteai_log or G0.eliteai_log or string.eliteai_log
+eliteai_cfg = eliteai_cfg or G0.eliteai_cfg or string.eliteai_cfg
+
+local function log(...)
+	if eliteai_log then eliteai_log("p" .. tostring(s_selfplayerid), ...) end
+end
+EliteAI.log = log
+
+local function cfg(key, default)
+	local v = eliteai_cfg and eliteai_cfg(key)
+	if v == nil then return default end
+	return v
+end
+local function num(key, default)
+	local v = tonumber(cfg(key, nil))
+	if v == nil then return default end
+	return v
+end
+EliteAI.cfg, EliteAI.num = cfg, num
+
+-- tests: the local slot handed to the AI gets Hard; ForceDiff makes the scripts of every AI see the same level
+do
+	local fd = tonumber(eliteai_cfg and eliteai_cfg("ForceDiff") or "")
+	if fd then s_diffLevel = fd end
+end
+
+-- is the new logic on for this AI player?
+local function new_logic_on()
+	local mode = cfg("NewAI", "normal")
+	if mode == "all" then return true end
+	if mode == "none" then return false end
+	if mode == "normal" then return s_diffLevel == AD_Standard end
+	for id in (string.gmatch or string.gfind)(mode, "%d+") do
+		if tonumber(id) == s_selfplayerid then return true end
+	end
+	return false
+end
+EliteAI.on = new_logic_on()
+
+--------------------------------------------------------------------------------------------------
+-- STAGE 1, the skeleton: fight as an army, hold the target, take real fights instead of running between points.
+-- Elite gives every combat squad its own task (1 task = 1 squad) with scores that spread squads apart when there is
+-- no threat (avoid_clumps 10), switch targets easily (inertia 1.25) and drop a task after 5 s idle at the rally point
+-- and 12 s at the target -> squads run around and trickle in one by one.
+_G0_RALLY = { InBase = RALLY_InBase, ReinforcePoint = RALLY_ReinforcePoint, LastPosSafe = RALLY_LastPosSafe, None = RALLY_None, NearDefendPoint = RALLY_NearDefendPoint }
+local Elite_Request_Combat = Request_Combat
+EliteAI.rc = 0
+Request_Combat = function(player, group, priority, p)
+	EliteAI.rc = EliteAI.rc + 1                                       -- telemetry: proof our wrapper is the one being called
+	if EliteAI.on and type(p) == "table" then
+		p.score_avoid_clumps_at_no_threat = num("ClumpAvoid", 0)     -- don't push squads apart
+		p.score_distance_to_squad = num("DistSquad", 20)            -- prefer targets close to the squad (and so to each other)
+		p.score_threat = num("Threat", 8)                           -- prefer places where the enemy army is
+		p.score_inertia = num(p.combat_type == COMBAT_Defend and "InertiaDef" or "Inertia", 4)   -- keep the chosen target
+		p.timeout_ticks_at_rally = num("RallyTicks", 200)           -- wait for the others at the rally point (ticks = 0.1 s)
+		p.timeout_ticks_at_target = num("TargetTicks", 450)         -- don't give up a fight after 12 s
+		local rally = cfg("Rally", nil)                             -- where a task gathers before going (Elite: near "its" defend point)
+		if rally and _G0_RALLY[rally] then p.rally_location = _G0_RALLY[rally] end
+	end
+	return Elite_Request_Combat(player, group, priority, p)
+end
+
+-- Elite: "easy and normal are only interested in capture points" - Normal attacks nothing but capture points, so it
+-- runs between points and never goes for the enemy army or base. The new logic ranks attack targets like Hard does.
+local Elite_CalcAttackPriority = Target_CalcAttackPriority
+Target_CalcAttackPriority = function(militaryPoint)
+	local r
+	if EliteAI.on and cfg("PointsOnly", "0") ~= "1" and (s_diffLevel == AD_Easy or s_diffLevel == AD_Standard) then
+		local real = s_diffLevel
+		s_diffLevel = AD_Hard
+		local ok, v = pcall(Elite_CalcAttackPriority, militaryPoint)
+		s_diffLevel = real
+		r = ok and v or 0
+	else
+		r = Elite_CalcAttackPriority(militaryPoint)
+	end
+	if EliteAI.collect and r > 0 then table.insert(EliteAI.collect, { mp = militaryPoint, pr = r }) end
+	return r
+end
+
+-- a fist, not a spread: Elite registers every point with a priority and each squad-task picks its own -> squads spread
+-- over the whole map. The new logic keeps only the best AttackTargets (default 2) so the army converges on them.
+local Elite_RankAttackTargets = RankAttackTargets
+RankAttackTargets = function()
+	if not EliteAI.on then return Elite_RankAttackTargets() end
+	EliteAI.collect = {}
+	local ok, err = pcall(Elite_RankAttackTargets)
+	local list = EliteAI.collect; EliteAI.collect = nil
+	if not ok then log("RankAttackTargets error:", tostring(err)); return end
+	table.sort(list, function(a, b) return a.pr > b.pr end)
+	-- 0.7: the position now, not the point: Elite rebuilds its military points, a point kept for the director's next
+	-- tick is a dead engine object - reading it crashed the game (R6025 pure virtual call, 0:30-3:00 into a match)
+	EliteAI.best_pos = nil
+	if list[1] then
+		local ok, p = pcall(Military_GetMilitaryPointPosition, list[1].mp)
+		if ok and p then EliteAI.best_pos = { x = p.x, y = p.y, z = p.z }; EliteAI.best_key = string.format("%.0f %.0f", p.x, p.z) end
+	end
+	local k = num("AttackTargets", 2)
+	if k <= 0 or table.getn(list) <= k then return end
+	Military_ClearTargets(s_selfplayer, MTARGET_Attack)
+	for i = 1, k do Military_AddTarget(s_selfplayer, MTARGET_Attack, list[i].mp, list[i].pr) end
+	Military_SortAndCapTargets(s_selfplayer, MTARGET_Attack)
+end
+
+-- stay in a fight longer before squads break off (Elite: 0.4 - 1.0 by population/economy)
+local Elite_SetAggression = Military_SetSquadAggression
+Military_SetSquadAggression = function(player, level)
+	if EliteAI.on then level = math.max(level, num("AggrMin", 0.75)) end
+	EliteAI.aggression = level
+	return Elite_SetAggression(player, level)
+end
+
+-- personality: rank attack targets by threat too (Elite: only defend does), applied on every (re)load of the personality
+local Elite_PersonalityCreate = s_personality.Create
+s_personality.Create = function()
+	Elite_PersonalityCreate()
+	if EliteAI.on then
+		s_personality.attack_prefer_threat = cfg("AttackPreferThreat", "1") == "1"
+	end
+end
+
+--------------------------------------------------------------------------------------------------
+-- STAGE 2, combat director (Director=1): Elite's job system moves every squad on its own (1 task = 1 squad), whatever
+-- we tune (v0.2-v0.4: no effect on spread or results). The director takes the combat squads out of that system and
+-- moves them as one army. Orders go through EliteAI.dll to a SCAR rule (the AI state has no Command_*).
+EliteAI.director = EliteAI.on and cfg("Director", "1") == "1"
+local ORD_MOVE, ORD_ATTACK, ORD_RETREAT = 1, 2, 3
+local _order = eliteai_order or (string and string.eliteai_order)
+EliteAI.retreating, EliteAI.orders, EliteAI.dir_squads = {}, 0, 0
+
+local function order(sq, pos, mode)
+	if not _order then return end
+	local ok = pcall(_order, Squad_GetGameID(sq), pos.x, pos.y, pos.z, mode)
+	if ok then EliteAI.orders = EliteAI.orders + 1 end
+end
+local function dist(a, b) return math.sqrt((a.x - b.x) ^ 2 + (a.z - b.z) ^ 2) end
+
+-- Elite's combat tasks would take the squads back: none for a directed AI (snipers, capture etc. stay Elite's)
+local Elite_MilitaryExecute = strategy_military.execute
+strategy_military.execute = function()
+	if EliteAI.director then
+		pcall(Task_KillGroup, s_selfplayer, TGROUP_Attack)
+		pcall(Task_KillGroup, s_selfplayer, TGROUP_Defend)
+		return
+	end
+	return Elite_MilitaryExecute()
+end
+
+function EliteAI_Director()
+	if not EliteAI.director then return end
+	local now = World_GetGameTime()
+	local army, n = {}, Military_SquadTotalCount(s_selfplayer)
+	for i = 0, n - 1 do
+		pcall(function()
+			local aisq = Military_GetAISquadAtIndex(s_selfplayer, i)
+			if aisq and not AISquad_InCaptureTask(aisq) then
+				local sq = AISquad_ConvertToSimSquad(aisq)
+				local hp = Squad_GetHealth(sq) / math.max(Squad_GetHealthMax(sq), 1)
+				table.insert(army, { sq = sq, id = Squad_GetGameID(sq), pos = Squad_GetPosition(sq), hp = hp, hit = Squad_IsUnderAttack(sq, 3) })
+			end
+		end)
+	end
+	EliteAI.dir_squads = table.getn(army)
+	-- badly hurt squads go home (once; they come back to the army after RetreatSecs)
+	local active = {}
+	for _, u in ipairs(army) do
+		local r = EliteAI.retreating[u.id]
+		if r and now - r < num("RetreatSecs", 40) then
+			-- still on the way / healing
+		elseif u.hp < num("RetreatHP", 0.35) then
+			EliteAI.retreating[u.id] = now; order(u.sq, u.pos, ORD_RETREAT)
+		else
+			EliteAI.retreating[u.id] = nil; table.insert(active, u)
+		end
+	end
+	if table.getn(active) == 0 then return end
+	-- 1) a fight is on: everybody goes there (help, don't trickle)
+	for _, u in ipairs(active) do
+		if u.hit then
+			for _, v in ipairs(active) do order(v.sq, u.pos, ORD_ATTACK) end
+			EliteAI.phase = "fight"; return
+		end
+	end
+	-- 2) no fight: the target, as one army
+	local target = EliteAI.best_pos                              -- {x, y, z}: dist() and order() read only the fields
+	if not target then return end
+	local cx, cz = 0, 0
+	for _, u in ipairs(active) do cx = cx + u.pos.x; cz = cz + u.pos.z end
+	cx, cz = cx / table.getn(active), cz / table.getn(active)
+	local spread = 0
+	for _, u in ipairs(active) do spread = spread + math.sqrt((u.pos.x - cx) ^ 2 + (u.pos.z - cz) ^ 2) end
+	spread = spread / table.getn(active)
+	local gr = num("GatherR", 30)
+	if spread > gr then                                          -- gather on the squad that is closest to the target
+		local lead = active[1]
+		for _, u in ipairs(active) do if dist(u.pos, target) < dist(lead.pos, target) then lead = u end end
+		for _, u in ipairs(active) do if u ~= lead and dist(u.pos, lead.pos) > gr * 0.6 then order(u.sq, lead.pos, ORD_MOVE) end end
+		EliteAI.phase = "gather"
+	elseif EliteAI.phase ~= "attack" or now - (EliteAI.attack_t or 0) > 12 or EliteAI.attack_mp ~= EliteAI.best_key then
+		for _, u in ipairs(active) do order(u.sq, target, ORD_ATTACK) end
+		EliteAI.phase, EliteAI.attack_t, EliteAI.attack_mp = "attack", now, EliteAI.best_key
+	end
+end
+
+--------------------------------------------------------------------------------------------------
+-- telemetry: what this AI has and does, every 30 s of game time (A/B comparison, reading a match without video)
+local function gametime()
+	local ok, t = pcall(World_GetGameTime)
+	if ok and t then return math.floor(t) end
+	return -1
+end
+
+-- losses, counted every 5 s: models that left a squad (killed; reinforcements only add) and whole squads that are gone
+EliteAI.seen, EliteAI.models_lost, EliteAI.squads_lost, EliteAI.engaged = {}, 0, 0, 0
+function EliteAI_Sample()
+	local ok, err = pcall(function()
+		local sg = Player_GetSquads(s_self_modplayer)
+		local now, engaged = {}, 0
+		local xs, zs, n2 = {}, {}, 0
+		for i = 1, SGroup_CountSpawned(sg) do
+			local sq = SGroup_GetSpawnedSquadAt(sg, i)
+			local id, n = Squad_GetGameID(sq), Squad_Count(sq)
+			now[id] = n
+			local before = EliteAI.seen[id]
+			if before and n < before then EliteAI.models_lost = EliteAI.models_lost + (before - n) end
+			if Squad_IsUnderAttack(sq, 5) then engaged = engaged + 1 end
+			local okp, pos = pcall(Squad_GetPosition, sq)
+			if okp and pos and n > 0 then n2 = n2 + 1; xs[n2] = pos.x; zs[n2] = pos.z end
+		end
+		for id, n in pairs(EliteAI.seen) do
+			if now[id] == nil then EliteAI.squads_lost = EliteAI.squads_lost + 1; EliteAI.models_lost = EliteAI.models_lost + n end
+		end
+		EliteAI.seen, EliteAI.engaged = now, engaged
+		-- army spread: mean distance of squads to their centre (a fist = small), averaged over the samples
+		if n2 >= 2 then
+			local cx, cz = 0, 0
+			for i = 1, n2 do cx = cx + xs[i]; cz = cz + zs[i] end
+			cx, cz = cx / n2, cz / n2
+			local d = 0
+			for i = 1, n2 do d = d + math.sqrt((xs[i] - cx) ^ 2 + (zs[i] - cz) ^ 2) end
+			EliteAI.spread_sum = (EliteAI.spread_sum or 0) + d / n2; EliteAI.spread_n = (EliteAI.spread_n or 0) + 1
+		end
+	end)
+	if not ok and not EliteAI.sample_err then EliteAI.sample_err = true; log("sample error:", tostring(err)) end
+end
+
+function EliteAI_Telemetry()
+	local c = cache or {}
+	local okA, att = pcall(Task_CountCombat, s_selfplayer, COMBAT_Attack)
+	local okD, def = pcall(Task_CountCombat, s_selfplayer, COMBAT_Defend)
+	log("T", gametime(), EliteAI.on and "new" or "elite",
+		"mil", math.floor(c.military_value or -1), "lost", EliteAI.models_lost, "squads_lost", EliteAI.squads_lost, "engaged", EliteAI.engaged,
+		"spread", math.floor((EliteAI.spread_sum or 0) / math.max(EliteAI.spread_n or 0, 1)),
+		"squads", c.military_count or -1, "pop", c.current_population_personnel or -1, "pts", c.total_pts_owned or -1,
+		"vp", c.self_vp_tickers or -1, "vp_enemy", c.enemy_vp_tickers or -1,
+		"rc", EliteAI.rc, "dir", EliteAI.dir_squads, "orders", EliteAI.orders, "phase", EliteAI.phase or "-", "att", okA and att or -1, "def", okD and def or -1, "aggr", EliteAI.aggression or -1,
+		"attpct", string.format("%.2f", (state_analysis and state_analysis.military_attackPercentage) or -1))
+end
+
+local Elite_InitializeAI = InitializeAI
+function InitializeAI()
+	Elite_InitializeAI()
+	log("init", "race", tostring(s_current_race), "difficulty", tostring(s_diffLevel), "team", tostring(s_self_team),
+		"logic", EliteAI.on and "new" or "elite", "eliteai", EliteAI.version)
+	-- what the AI environment can do directly (for a combat director that orders squads itself)
+	local avail = {}
+	for _, n in ipairs({ "Command_SquadPos", "Command_SquadAttackMovePos", "Command_Squad", "Military_GetAISquadAtIndex",
+			"AISquad_ConvertToSimSquad", "AISquad_InCombatTask", "Military_SquadTotalCount", "Military_GetMilitaryPointPosition",
+			"SCMD_Move", "SCMD_AttackMove", "SCMD_Retreat", "Squad_GetPosition", "Squad_GetHealth", "World_GetPlayerAt" }) do
+		table.insert(avail, n .. "=" .. type(getfenv(1)[n]))
+	end
+	log("api", table.concat(avail, " "))
+	TimeRule_AddInterval(EliteAI_Sample, 5, 0)
+	if EliteAI.director then TimeRule_AddInterval(EliteAI_Director, num("DirectorSecs", 3), 0) end
+	TimeRule_AddInterval(EliteAI_Telemetry, 30, 0)
+end
