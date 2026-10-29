@@ -7,7 +7,7 @@ STATS_HOST ?= rts.fintebtc.de
 STATS = $(if $(STATS_HOST),-DSTATS_HOST='L"$(STATS_HOST)"',)
 
 all: $(OUT)/ObsFix.dll $(OUT)/LobbyStats.dll $(OUT)/winmm.dll $(OUT)/FrameProbe.dll $(OUT)/ReinforceFix.dll
-all: $(OUT)/CGNumbers.dll $(OUT)/MatchTimer.dll $(OUT)/EliteAI.dll $(OUT)/Reverse.dll
+all: $(OUT)/CGNumbers.dll $(OUT)/MatchTimer.dll $(OUT)/EliteAI.dll $(OUT)/Reverse.dll $(OUT)/MMFind.dll
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -39,3 +39,6 @@ $(OUT)/EliteAI.dll: eliteai/eliteai.c | $(OUT)
 
 $(OUT)/Reverse.dll: reverse/reverse.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
+
+$(OUT)/MMFind.dll: mmfind/mmfind.c | $(OUT)
+	$(CC) $(CFLAGS) -shared -o $@ $< -lwinhttp -lpsapi -lshell32 -lole32 -static-libgcc

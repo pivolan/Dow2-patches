@@ -64,6 +64,13 @@ reverse/
     own turn plans reverse on paths up to 30 m, so the way is driven in 25 m legs, the next one 8 m before the end of the current, without stopping. Only the point of the player's own right-click is moved: the order is the normal one, nothing in the
     simulation changes, no desync, the other players don't need it. Reverse.ini: Key, StepMeters, LeadMeters.
 
+mmfind/
+    Automatch (launcher add-on "Automatch (test)"): Multiplayer -> Find a Game -> Start Searching queues the player on
+    the ladder service (rts.fintebtc.de/ladder/api/mm); when a match is found the host creates the room, the others
+    join, the lobby options (VP, 500 points, fixed positions, standard resources), swaps and observers are set by the
+    DLL, and the match starts by itself. Settings in MMFind.ini (server, maps, rating spread, chosen race/hero).
+    Published by hand for now (launcher id "automatch", store version mmfind-<ver>), not through addons.json.
+
 Installing with Elite: put the DLL into Elite_DLLs\ and add it to InjectedFiles= in Elite.launchconfig.
 Without Elite: winmm.dll next to DOW2.exe, patches into dow2-patches\.
 
