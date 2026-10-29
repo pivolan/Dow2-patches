@@ -239,7 +239,9 @@ static void decorate(GFxValue *args, unsigned count) {
         unsigned long long id = 0;
         int si = a[A_SLOTINDEX].type == GFX_NUMBER ? (int)a[A_SLOTINDEX].v.num : -1;
         if (si >= 0 && si < nids && ids[si]) id = ids[si];       // player ID by slot position
-        int observer = g_maxPlayers > 0 && si >= g_maxPlayers;  // observer: position beyond the player seats
+        // positions: team 1 = 0..3, team 2 = 4..7, each team's first maxPlayers/2 are players, the rest observer seats
+        int tn = g_maxPlayers > 1 ? g_maxPlayers / 2 : 4;
+        int observer = si >= 0 && ((si % 4) >= tn || si >= 8);
         wchar_t key[64];
         if ((id >> 32) == 0x01100001) _snwprintf(key, 63, L"/steam/%llu", id); else wcsncpy(key, name, 63);   // stats are looked up by SteamID or by name
         key[63] = 0;
@@ -368,6 +370,7 @@ static void probe(void *movie, const char *method, GFxValue *args, unsigned coun
 // main menu: own name in the top right corner, Receive_SetGamerTag(wstr name, num). Looked up by name, as the lobby
 // does for the own slot. Numbers come from the cache; a name not cached yet is fetched and shows up the next time.
 static wchar_t g_tagBuf[128];
+static volatile DWORD g_cdAt;          // the lobby start countdown began: the loading screen comes next (ls_draw)
 static volatile int g_front;          // the main menu (with the name bar) is the current screen
 static wchar_t g_menuName[64];        // own name from SetGamerTag (under g_lock), for the main menu tooltip
 // menu tooltip placement, [MenuTooltip] in the ini, in 1/1000 of the screen height: its right edge and top relative
@@ -415,6 +418,13 @@ static char __fastcall hook(void *self, void *edx, const char *method, int flags
         screen_event(method, args, count);
     if (method && args && !strcmp(method, "Receive_PopulatePlayerList") && count < 4096 && !IsBadReadPtr(args, count * sizeof(GFxValue)))
         decorate(args, count);
+    if (method && args && count >= 1 && !strcmp(method, "Receive_UpdateCancelButtonText") && !IsBadReadPtr(args, sizeof(GFxValue))) {
+        const wchar_t *t = args[0].type == GFX_WSTRING && args[0].v.ws ? args[0].v.ws : L"";
+        const wchar_t *b = wcschr(t, L'(');
+        int counting = b && iswdigit(b[1]);
+        if (counting && !g_cdAt) logmsg("lobby countdown: the loading screen comes next");
+        g_cdAt = counting ? (g_cdAt ? g_cdAt : GetTickCount()) : 0;
+    }
     if (method && args && count >= 1 && !strcmp(method, "Receive_SetMaxPlayers") && !IsBadReadPtr(args, sizeof(GFxValue)) && args[0].type == GFX_NUMBER)
         g_maxPlayers = (int)args[0].v.num;
     return g_orig(self, edx, method, flags, args, count);
@@ -649,23 +659,22 @@ static void draw_tip(IDirect3DDevice9 *dev) {
 }
 // ---------- loading screen of an online match: everyone's rating, by team ----------
 // The players are the ones of the last lobby (PopulatePlayerList): team 1 holds the first half of the seats.
-static int g_loadOn = 0;                               // [LoadingScreen] Ratings=1 (off until it has been seen on a real loading screen)
+static int g_loadOn = 1;                               // [LoadingScreen] Ratings
 static void draw_loading(IDirect3DDevice9 *dev) {
     typedef struct { wchar_t name[64]; int team, pos, known, rating, wr, games; } Row;
     Row rows[16]; int n = 0, W, H;
     if (!g_stats || g_lost || !on_back_buffer(dev, &W, &H)) return;
     EnterCriticalSection(&g_lock);
-    int half = g_maxPlayers > 1 ? g_maxPlayers / 2 : 1;
     for (int i = 0; i < g_nseen && n < 16; i++) {
         Seen *sn = &g_seen[i];
         if (sn->obs || sn->pos < 0) continue;
         Row *r = &rows[n++]; memset(r, 0, sizeof *r);
-        wcsncpy(r->name, sn->name, 63); r->team = sn->pos >= half; r->pos = sn->pos;
+        wcsncpy(r->name, sn->name, 63); r->team = sn->pos >= 4; r->pos = sn->pos;   // team 2 sits at 4..7
         Entry *e = find(sn->key);
         if (e && e->known) { r->known = 1; r->rating = e->rating; r->games = e->wins + e->losses; r->wr = r->games ? (e->wins * 100 + r->games / 2) / r->games : 0; }
     }
     LeaveCriticalSection(&g_lock);
-    if (n < 2) return;
+    if (n < 2) { static int warned; if (!warned++) logmsg("loading box: only %d player(s) known from the lobby, not drawn", n); return; }
     for (int i = 1; i < n; i++)                                      // team 1 first, by seat
         for (int j = i; j > 0 && (rows[j].team * 100 + rows[j].pos) < (rows[j - 1].team * 100 + rows[j - 1].pos); j--) { Row t = rows[j]; rows[j] = rows[j - 1]; rows[j - 1] = t; }
     float k = H / 1440.0f;
@@ -691,7 +700,10 @@ static void draw_loading(IDirect3DDevice9 *dev) {
     int split = 0; for (int i = 1; i < n; i++) if (rows[i].team != rows[i - 1].team) split = i;
     int bw = padX * 2 + cw[0] + cw[1] + cw[2] + cw[3] + gap * 3;
     int bh = padT + pitch * (n + 1) + (split ? teamGap : 0) + padB - (pitch - px);
-    RECT box; box.left = (W - bw) / 2; box.top = 30 * H / 1000; box.right = box.left + bw; box.bottom = box.top + bh;
+    // bottom centre: the loading screen has the map name on top, the player banners at the sides, the map in the middle and
+    // the "Loading" line with a tip under it (down to ~75% of the height); below that only the background
+    RECT box; box.left = (W - bw) / 2; box.bottom = H * 965 / 1000; box.top = box.bottom - bh; box.right = box.left + bw;
+    if (box.top < H * 76 / 100) { box.top = H * 76 / 100; box.bottom = box.top + bh; }
     int haveBox = ensure_box(dev, bw, bh, k < 1 ? 1 : k);
     int x[4]; x[0] = box.left + padX; x[1] = x[0] + cw[0] + gap; x[2] = x[1] + cw[1] + gap; x[3] = x[2] + cw[2] + gap;
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
@@ -720,12 +732,22 @@ static void draw_loading(IDirect3DDevice9 *dev) {
 extern void (*mt_extra_draw)(IDirect3DDevice9 *);
 extern void (*mt_extra_lost)(IDirect3DDevice9 *);
 extern void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
-int mt_loading(void); int mt_online(void); void mt_start(const wchar_t *dir, const wchar_t *ini);
+int mt_loading(void); int mt_online(void); int mt_ticking(void); void mt_start(const wchar_t *dir, const wchar_t *ini);
 static volatile int g_d3dReady;                     // d3dx and the game font loaded (tip_worker)
+// the loading screen has no Flash calls of its own: it comes right after the lobby's start countdown ("Cancel Countdown
+// (10)" on the cancel button, any language: a number in brackets), so the box shows from the countdown to the first sim tick
 static void ls_draw(IDirect3DDevice9 *dev) {
     if (!g_d3dReady) return;
+    if (g_loadOn && g_cdAt) {                             // once per countdown: why the box is drawn or not
+        static DWORD said; if (said != g_cdAt) { said = g_cdAt; int np = 0; for (int k = 0; k < g_nseen; k++) if (!g_seen[k].obs) np++;
+            logmsg("loading box: menu=%d online=%d ticking=%d lobby people=%d players=%d", g_front, mt_online(), mt_ticking(), g_nseen, np); }
+    }
+    if (g_cdAt) g_front = 0;                              // the countdown is not the main menu, whatever the screen stack says
     if (g_front) draw_tip(dev);
-    else if (g_loadOn && mt_loading() && mt_online()) draw_loading(dev);
+    else if (g_loadOn && g_cdAt) {
+        if (mt_ticking() || GetTickCount() - g_cdAt > 300000) g_cdAt = 0;     // the match runs (or no match came): done
+        else if (mt_online()) draw_loading(dev);
+    }
 }
 // ID3DXFont/ID3DXSprite hold state blocks and video memory: they must let go before Reset or Reset fails
 static void ls_lost(IDirect3DDevice9 *dev) {
@@ -780,11 +802,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_tipDX   = GetPrivateProfileIntW(L"MenuTooltip", L"DX", g_tipDX, ini);
     g_tipDY   = GetPrivateProfileIntW(L"MenuTooltip", L"DY", g_tipDY, ini);
     g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
-    g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 0, ini);
+    g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 1, ini);
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.8.0%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.8.1%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));

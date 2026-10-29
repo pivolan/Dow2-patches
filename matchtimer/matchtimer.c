@@ -363,6 +363,7 @@ void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
 static int g_clockOff;                          // a stand-alone MatchTimer.dll draws the clock already
 int mt_loading(void) { return g_inMatch && !g_ticks; }   // SimulatePre came, no sim tick yet: the loading screen
 int mt_online(void) { return (session_flags() & ONLINE_MASK) != 0; }
+int mt_ticking(void) { return g_inMatch && g_ticks; }                  // the match runs (past its loading screen)
 #endif
 static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
