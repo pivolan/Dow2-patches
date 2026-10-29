@@ -31,7 +31,7 @@ $(OUT)/CGNumbers.dll: cgnumbers/cgnumbers.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -ld3d9 -static-libgcc
 
 $(OUT)/MatchTimer.dll: matchtimer/matchtimer.c common/gamefont.h | $(OUT)
-	$(CC) $(CFLAGS) -shared -o $@ $< -lpsapi -static-libgcc
+	$(CC) $(CFLAGS) -shared -o $@ $< -lpsapi -static-libgcc -Wl,--exclude-all-symbols
 
 
 $(OUT)/EliteAI.dll: eliteai/eliteai.c | $(OUT)
