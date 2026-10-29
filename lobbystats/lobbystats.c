@@ -657,11 +657,16 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
-// ---------- loading screen of an online match: everyone's rating, by team ----------
-// The players are the ones of the last lobby (PopulatePlayerList): team 1 holds the first half of the seats.
+// ---------- loading screen of an online match: each player's rating on his own banner ----------
+// As wellplayed asked (Discord, Ladder DoW 2, 27.10): the MMR in the free space of the player's banner, above its loading
+// bar - left of the name on the left team's banners, right of it on the right team's. The banners sit at fixed places
+// relative to the screen centre and scale with the screen height (measured at 1280x800: left banner x 145..405,
+// y 192..258, name on its right edge; right banner mirrored). Team 1 = lobby positions 0..3, team 2 = 4..7, in seat order
+// down the column; the step between banners in team games is [LoadingScreen] Step (1/1000 H).
 static int g_loadOn = 1;                               // [LoadingScreen] Ratings
+static int g_loadStep = 98;                            // [LoadingScreen] Step
 static void draw_loading(IDirect3DDevice9 *dev) {
-    typedef struct { wchar_t name[64]; int team, pos, known, rating, wr, games; } Row;
+    typedef struct { int team, pos, known, rating, wr, games; } Row;
     Row rows[16]; int n = 0, W, H;
     if (!g_stats || g_lost || !on_back_buffer(dev, &W, &H)) return;
     EnterCriticalSection(&g_lock);
@@ -669,59 +674,44 @@ static void draw_loading(IDirect3DDevice9 *dev) {
         Seen *sn = &g_seen[i];
         if (sn->obs || sn->pos < 0) continue;
         Row *r = &rows[n++]; memset(r, 0, sizeof *r);
-        wcsncpy(r->name, sn->name, 63); r->team = sn->pos >= 4; r->pos = sn->pos;   // team 2 sits at 4..7
+        r->team = sn->pos >= 4; r->pos = sn->pos;                    // team 2 sits at 4..7
         Entry *e = find(sn->key);
         if (e && e->known) { r->known = 1; r->rating = e->rating; r->games = e->wins + e->losses; r->wr = r->games ? (e->wins * 100 + r->games / 2) / r->games : 0; }
     }
     LeaveCriticalSection(&g_lock);
-    if (n < 2) { static int warned; if (!warned++) logmsg("loading box: only %d player(s) known from the lobby, not drawn", n); return; }
-    for (int i = 1; i < n; i++)                                      // team 1 first, by seat
-        for (int j = i; j > 0 && (rows[j].team * 100 + rows[j].pos) < (rows[j - 1].team * 100 + rows[j - 1].pos); j--) { Row t = rows[j]; rows[j] = rows[j - 1]; rows[j - 1] = t; }
-    float k = H / 1440.0f;
-    int px = (int)(22 * k + 0.5f); if (px < 10) px = 10;
-    if (!ensure_font(dev, px)) return;
-    // columns: name, rating, win rate, games; a header line and a gap between the teams
-    static const wchar_t *head[4] = { L"Relic", L"Rating", L"Win rate", L"Games" };
-    wchar_t cell[16][4][64]; int cw[4] = {0, 0, 0, 0};
-    RECT m;
-    for (int c = 0; c < 4; c++) { SetRect(&m, 0, 0, 0, 0); g_font->lpVtbl->DrawTextW(g_font, NULL, head[c], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0); cw[c] = m.right; }
-    for (int i = 0; i < n; i++) {
-        wcscpy(cell[i][0], rows[i].name);
-        if (rows[i].known) {
-            _snwprintf(cell[i][1], 63, L"%d", rows[i].rating); _snwprintf(cell[i][2], 63, L"%d%%", rows[i].wr); _snwprintf(cell[i][3], 63, L"%d", rows[i].games);
-        } else { wcscpy(cell[i][1], L"—"); cell[i][2][0] = cell[i][3][0] = 0; }
-        for (int c = 0; c < 4; c++) {
-            cell[i][c][63] = 0; SetRect(&m, 0, 0, 0, 0);
-            g_font->lpVtbl->DrawTextW(g_font, NULL, cell[i][c], -1, &m, DT_CALCRECT | DT_SINGLELINE, 0);
-            if (m.right > cw[c]) cw[c] = m.right;
-        }
+    if (n < 2) { static int warned; if (!warned++) logmsg("loading: only %d player(s) known from the lobby, no ratings", n); return; }
+    int big = H * 30 / 1000, small = H * 17 / 1000;                    // the rating, and win rate / games under it
+    if (big < 12) big = 12; if (small < 9) small = 9;
+    static ID3DXFont *fb, *fs; static IDirect3DDevice9 *fdev; static int fbig, fsmall;
+    if (fdev != dev || fbig != big || fsmall != small || !fb || !fs) {
+        if (fb) fb->lpVtbl->Release(fb); if (fs) fs->lpVtbl->Release(fs); fb = fs = NULL;
+        fdev = dev; fbig = big; fsmall = small;
+        if (FAILED(p_D3DXCreateFontA(dev, big, 0, FW_BOLD, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Book Antiqua", &fb))) fb = NULL;
+        if (FAILED(p_D3DXCreateFontA(dev, small, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Arial", &fs))) fs = NULL;
     }
-    int padX = (int)(22 * k), padT = (int)(20 * k), padB = (int)(18 * k), pitch = (int)(30 * k + 0.5f), gap = (int)(30 * k), teamGap = (int)(12 * k);
-    int split = 0; for (int i = 1; i < n; i++) if (rows[i].team != rows[i - 1].team) split = i;
-    int bw = padX * 2 + cw[0] + cw[1] + cw[2] + cw[3] + gap * 3;
-    int bh = padT + pitch * (n + 1) + (split ? teamGap : 0) + padB - (pitch - px);
-    // bottom centre: the loading screen has the map name on top, the player banners at the sides, the map in the middle and
-    // the "Loading" line with a tip under it (down to ~75% of the height); below that only the background
-    RECT box; box.left = (W - bw) / 2; box.bottom = H * 965 / 1000; box.top = box.bottom - bh; box.right = box.left + bw;
-    if (box.top < H * 76 / 100) { box.top = H * 76 / 100; box.bottom = box.top + bh; }
-    int haveBox = ensure_box(dev, bw, bh, k < 1 ? 1 : k);
-    int x[4]; x[0] = box.left + padX; x[1] = x[0] + cw[0] + gap; x[2] = x[1] + cw[1] + gap; x[3] = x[2] + cw[2] + gap;
+    if (!fb || !fs || !ensure_font(dev, small)) return;               // ensure_font: the sprite
+    int cx = W / 2, idx[2] = {0, 0};
+    for (int i = 1; i < n; i++)                                       // seat order inside each team
+        for (int j = i; j > 0 && rows[j].pos < rows[j - 1].pos; j--) { Row t = rows[j]; rows[j] = rows[j - 1]; rows[j - 1] = t; }
     D3DVIEWPORT9 vp, full = { 0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f };
     int haveVp = SUCCEEDED(IDirect3DDevice9_GetViewport(dev, &vp));
     IDirect3DDevice9_SetViewport(dev, &full);
     if (SUCCEEDED(g_sprite->lpVtbl->Begin(g_sprite, D3DXSPRITE_ALPHABLEND))) {
-        if (haveBox) { float pos[3] = { (float)box.left, (float)box.top, 0.0f }; g_sprite->lpVtbl->Draw(g_sprite, g_box, NULL, NULL, pos, 0xFFFFFFFF); }
-        for (int i = -1; i < n; i++) {                               // -1: the header line
-            int y = box.top + padT + (i + 1) * pitch + (split && i >= split ? teamGap : 0);
-            for (int c = 0; c < 4; c++) {
-                const wchar_t *t = i < 0 ? head[c] : cell[i][c];
-                DWORD col = i < 0 ? 0xFF8E8C88 : c == 1 ? 0xFFE8C66A : 0xFFD2D2D4;   // the rating in the game's gold
-                // numbers right-aligned in their column, the name left
-                RECT r = { x[c], y, x[c] + cw[c], y + px }, sh = r; OffsetRect(&sh, 1, 1);
-                DWORD f = DT_SINGLELINE | DT_NOCLIP | (c ? DT_RIGHT : DT_LEFT);
-                g_font->lpVtbl->DrawTextW(g_font, g_sprite, t, -1, &sh, f, 0xA0000000);
-                g_font->lpVtbl->DrawTextW(g_font, g_sprite, t, -1, &r, f, col);
-            }
+        for (int i = 0; i < n; i++) {
+            Row *r = &rows[i]; int k = idx[r->team]++;
+            int top = H * 243 / 1000 + k * H * g_loadStep / 1000;     // the banner's free band, above its loading bar
+            // left team: from the banner's left edge; right team: up to the banner's right edge
+            RECT a = r->team ? (RECT){ cx + H * 400 / 1000, top, cx + H * 600 / 1000, top + big }
+                             : (RECT){ cx - H * 600 / 1000, top, cx - H * 400 / 1000, top + big };
+            RECT b = a; b.top = top + big; b.bottom = b.top + small + 2;
+            DWORD f = DT_SINGLELINE | DT_NOCLIP | (r->team ? DT_RIGHT : DT_LEFT);
+            wchar_t t1[32], t2[48];
+            if (r->known) { _snwprintf(t1, 31, L"%d", r->rating); _snwprintf(t2, 47, L"%d%%  ·  %d", r->wr, r->games); }
+            else { wcscpy(t1, L"—"); t2[0] = 0; }
+            RECT s1 = a; OffsetRect(&s1, 1, 2); RECT s2 = b; OffsetRect(&s2, 1, 1);
+            fb->lpVtbl->DrawTextW(fb, g_sprite, t1, -1, &s1, f, 0xC0000000);
+            fb->lpVtbl->DrawTextW(fb, g_sprite, t1, -1, &a, f, 0xFFE8C66A);          // the game's gold
+            if (t2[0]) { fs->lpVtbl->DrawTextW(fs, g_sprite, t2, -1, &s2, f, 0xA0000000); fs->lpVtbl->DrawTextW(fs, g_sprite, t2, -1, &b, f, 0xFFB8B6B0); }
         }
         g_sprite->lpVtbl->End(g_sprite);
     }
@@ -803,10 +793,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_tipDY   = GetPrivateProfileIntW(L"MenuTooltip", L"DY", g_tipDY, ini);
     g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
     g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 1, ini);
+    g_loadStep = GetPrivateProfileIntW(L"LoadingScreen", L"Step", g_loadStep, ini);
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.8.1%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.8.2%s", g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     load_cache(); install();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
