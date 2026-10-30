@@ -1,8 +1,48 @@
 {
   "_readme": "What the launcher gives players. Raise an add-on's version and merge to main: the server builds and publishes it within minutes. See README, Publishing.",
   "lobbystats": {
-    "version": "0.9.2",
-    "dll": "LobbyStats.dll"
+    "version": "0.9.3",
+    "dll": "LobbyStats.dll",
+    "options": [
+      {
+        "id": "timer",
+        "name": { "en": "Match timer", "ru": "Таймер матча", "es": "Cronómetro", "fr": "Chrono de partie", "de": "Spieluhr" },
+        "ini": "Elite_DLLs/LobbyStats.ini", "section": "MatchTimer", "key": "Enabled", "default": true
+      },
+      {
+        "id": "loading",
+        "name": {
+          "en": "Ratings on the loading screen",
+          "ru": "Рейтинги на экране загрузки",
+          "es": "Ratings en la pantalla de carga",
+          "fr": "Classements à l'écran de chargement",
+          "de": "Ratings im Ladebildschirm"
+        },
+        "ini": "Elite_DLLs/LobbyStats.ini", "section": "LoadingScreen", "key": "Ratings", "default": true
+      },
+      {
+        "id": "joinsound",
+        "name": {
+          "en": "Sound when someone comes into the lobby (game in the background)",
+          "ru": "Звук, когда заходят в лобби (игра свёрнута)",
+          "es": "Sonido cuando alguien entra al lobby (juego en segundo plano)",
+          "fr": "Son quand quelqu un entre dans le lobby (jeu en arrière-plan)",
+          "de": "Ton, wenn jemand die Lobby betritt (Spiel im Hintergrund)"
+        },
+        "ini": "Elite_DLLs/LobbyStats.ini", "section": "Lobby", "key": "JoinSound", "default": true
+      },
+      {
+        "id": "cooldowns",
+        "name": {
+          "en": "Cooldown seconds on ability buttons",
+          "ru": "Секунды перезарядки на кнопках способностей",
+          "es": "Segundos de recarga en los botones de habilidades",
+          "fr": "Secondes de recharge sur les boutons de capacités",
+          "de": "Abklingzeit in Sekunden auf den Fähigkeitstasten"
+        },
+        "ini": "Elite_DLLs/LobbyStats.ini", "section": "Cooldowns", "key": "Enabled", "default": false
+      }
+    ]
   },
   "obsfix": {
     "version": "1",
