@@ -210,6 +210,26 @@ static void marker_check(void) {                    // at start: a marker left o
 #define SWAP_CB   0x004910BB
 static const unsigned char SWAP_PRO[6] = {0x83, 0x7E, 0x08, 0xFF, 0x75, 0x4A};
 static volatile LONG g_swapCount;
+// Every patch of the game's code or import table goes through here: the mutex all our DLLs share (one patch at a time in the
+// game process - two threads opening a page for writing and closing it again crashed the game at start), the bytes written
+// with WriteProcessMemory (fails instead of crashing if the page is closed under us), the instruction cache flushed.
+static HANDLE patch_lock(void) {
+    char n[64]; wsprintfA(n, "Local\\dow2patch_iat_%lu", GetCurrentProcessId());
+    HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx) WaitForSingleObject(mx, 5000); return mx;
+}
+static void patch_unlock(HANDLE mx) { if (mx) { ReleaseMutex(mx); CloseHandle(mx); } }
+static int code_jmp(unsigned char *at, void *dest, int len) {   // "jmp dest" at `at`, the rest of `len` bytes NOPs
+    unsigned char b[16]; if (len < 5 || len > 16) return 0;
+    b[0] = 0xE9; *(DWORD *)(b + 1) = (DWORD)dest - (DWORD)(at + 5); for (int i = 5; i < len; i++) b[i] = 0x90;
+    HANDLE mx = patch_lock(); DWORD o; SIZE_T w = 0; int ok = 0;
+    if (VirtualProtect(at, len, PAGE_EXECUTE_READWRITE, &o)) {
+        ok = WriteProcessMemory(GetCurrentProcess(), at, b, len, &w) && w == (SIZE_T)len;
+        VirtualProtect(at, len, o, &o);
+    }
+    FlushInstructionCache(GetCurrentProcess(), at, len);
+    patch_unlock(mx);
+    return ok;
+}
 static void install_swap_hook(void) {
     unsigned char *t = (unsigned char *)SWAP_AT;
     if (IsBadReadPtr(t, 6) || memcmp(t, SWAP_PRO, 6)) { logmsg("swap request prologue mismatch - swaps are asked as usual"); return; }
@@ -231,8 +251,7 @@ static void install_swap_hook(void) {
 #undef B
 #undef REL
 #undef ABS
-    DWORD o; VirtualProtect(t, 6, PAGE_EXECUTE_READWRITE, &o); t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)c - (DWORD)(t + 5); t[5] = 0x90;
-    VirtualProtect(t, 6, o, &o); FlushInstructionCache(GetCurrentProcess(), t, 6);
+    code_jmp(t, (void *)c, 6);
     logmsg("hooked swap requests (auto-accept in ladder lobbies: %s)", g_autoSwapCfg ? "on" : "off");
 }
 
@@ -513,8 +532,7 @@ static void install_host_hook(void) {
     if (IsBadReadPtr(t, 6) || memcmp(t, HOST_PRO, 6)) { logmsg("OnClickHost prologue mismatch - the name box will be used"); return; }
     unsigned char *tr = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     memcpy(tr, HOST_PRO, 6); tr[6] = 0xE9; *(DWORD *)(tr + 7) = (FN_ONCLICKHOST + 6) - (DWORD)(tr + 11); g_hostOrig = (OnClickHostFn)tr;
-    DWORD o; VirtualProtect(t, 6, PAGE_EXECUTE_READWRITE, &o); t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)host_hook - (DWORD)(t + 5); t[5] = 0x90;
-    VirtualProtect(t, 6, o, &o); FlushInstructionCache(GetCurrentProcess(), t, 6);
+    code_jmp(t, (void *)host_hook, 6);
     logmsg("hooked OnClickHost (direct host)");
 }
 
@@ -533,8 +551,7 @@ static void install_sfm_hook(void) {
     if (IsBadReadPtr(t, 7) || memcmp(t, SFM_PRO, 7)) { logmsg("SFMovie ctor prologue mismatch"); return; }
     unsigned char *tr = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     memcpy(tr, SFM_PRO, 7); tr[7] = 0xE9; *(DWORD *)(tr + 8) = (FN_SFMOVIE_CTOR + 7) - (DWORD)(tr + 12); g_sfmOrig = (SfmCtorFn)tr;
-    DWORD o; VirtualProtect(t, 7, PAGE_EXECUTE_READWRITE, &o); t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)sfm_hook - (DWORD)(t + 5); t[5] = t[6] = 0x90;
-    VirtualProtect(t, 7, o, &o); FlushInstructionCache(GetCurrentProcess(), t, 7);
+    code_jmp(t, (void *)sfm_hook, 7);
 }
 
 // ---------------- Map Preferences dialog: all Elite maps of the chosen mode, checked = may be played ----------------
@@ -585,8 +602,7 @@ static void install_slot_hook(void) {
     if (IsBadReadPtr(t, 6) || memcmp(t, SLOTMENU_PRO, 6)) { logmsg("slot menu prologue mismatch - no slot control"); return; }
     unsigned char *tr = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     memcpy(tr, SLOTMENU_PRO, 6); tr[6] = 0xE9; *(DWORD *)(tr + 7) = (FN_SLOTMENU + 6) - (DWORD)(tr + 11); g_slotMenuOrig = (SlotMenuFn)tr;
-    DWORD o; VirtualProtect(t, 6, PAGE_EXECUTE_READWRITE, &o); t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)slotmenu_hook - (DWORD)(t + 5); t[5] = 0x90;
-    VirtualProtect(t, 6, o, &o); FlushInstructionCache(GetCurrentProcess(), t, 6);
+    code_jmp(t, (void *)slotmenu_hook, 6);
     logmsg("hooked slot menu");
 }
 static int team_n(void) { return g_matchMode + 1; }
@@ -1218,15 +1234,14 @@ static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     // one import-table write at a time across all our DLLs (LobbyStats hooks this same Shark slot from its own thread; two
     // threads opening and closing the page at once crashed the game at start): the shared mutex, the slot read again under
     // it (the other hook may be in by now - we chain onto it), the write through WriteProcessMemory (fails, never crashes)
-    char n[64]; wsprintfA(n, "Local\\dow2patch_iat_%lu", GetCurrentProcessId());
-    HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx) WaitForSingleObject(mx, 5000);
+    HANDLE mx = patch_lock();
     int ok = 0; DWORD cur = *(volatile DWORD *)slot, old;
     if (VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) {
         SIZE_T w = 0;
         if (WriteProcessMemory(GetCurrentProcess(), (void *)slot, &fn, 4, &w) && w == 4) { *orig = (void *)cur; ok = 1; }
         VirtualProtect((void *)slot, 4, old, &old);
     }
-    if (mx) { ReleaseMutex(mx); CloseHandle(mx); }
+    patch_unlock(mx);
     return ok;
 }
 static DWORD WINAPI installer(LPVOID _) {
@@ -1248,9 +1263,8 @@ static void install(void) {
     else { memcpy(tr, PROLOGUE, 5); tr[5] = 0xE9; *(DWORD *)(tr + 6) = HOOK_RESUME - (DWORD)(tr + 10); }
     g_invOrig = (InvokeFn)tr;
     memcpy(tr + 16, FSCMD_PRO, 7); tr[23] = 0xE9; *(DWORD *)(tr + 24) = (FN_FSCMD + 7) - (DWORD)(tr + 28); g_fsOrig = (FsCmdFn)(tr + 16);
-    DWORD o;
-    VirtualProtect(t, 5, PAGE_EXECUTE_READWRITE, &o); t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)inv_hook - (DWORD)(t + 5); VirtualProtect(t, 5, o, &o);
-    VirtualProtect(f, 7, PAGE_EXECUTE_READWRITE, &o); f[0] = 0xE9; *(DWORD *)(f + 1) = (DWORD)fs_hook - (DWORD)(f + 5); f[5] = f[6] = 0x90; VirtualProtect(f, 7, o, &o);
+    code_jmp(t, (void *)inv_hook, 5);
+    code_jmp(f, (void *)fs_hook, 7);
     FlushInstructionCache(GetCurrentProcess(), NULL, 0);
     logmsg("hooked Invoke + fscommand");
     install_host_hook(); install_sfm_hook(); install_slot_hook(); install_swap_hook(); marker_check();
@@ -1285,7 +1299,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.30 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.31 start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;
