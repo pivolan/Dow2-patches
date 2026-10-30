@@ -236,12 +236,14 @@ static void install_swap_hook(void) {
     logmsg("hooked swap requests (auto-accept in ladder lobbies: %s)", g_autoSwapCfg ? "on" : "off");
 }
 
-// ---------------- game options of a ladder lobby: Victory Point Control, 500 points, fixed start positions, standard resources ----------------
+// ---------------- game options of a ladder lobby: Victory Point Control, 500 points, random start positions, standard resources ----------------
+// Random start (0.29): the game shuffles the start positions inside each team (checked on 6p maps), so only who is in which team
+// matters, not the slot inside the team - see the lobby placement below.
 // Lobby drop-downs (Receive_PopulateDropDownList: id, title, items...): 1 victory condition, 2 tickets, 3 start location, 4 resources.
 // The host's game keeps the last custom game's options - the host sets these every time.
 // the wanted item in each language the players use (English game, Gosudar's Russian translation)
 static const wchar_t *OPT_WANT[5][3] = {{NULL}, {L"Victory Point Control", L"Контроль победных точек", NULL}, {L"500 points", L"500", NULL},
-                                        {L"Fixed", L"Фиксированная", NULL}, {L"Standard", L"Стандартный", NULL}};
+                                        {L"Random", L"Случайная", L"Случайно"}, {L"Standard", L"Стандартный", NULL}};
 static volatile int g_optWant[5] = {-1, -1, -1, -1, -1}, g_optCur[5] = {-1, -1, -1, -1, -1}; static void *g_optSelf;
 
 // ---------------- HTTP (worker thread) ----------------
@@ -945,25 +947,61 @@ static void stage_line(void) {                 // what the cover says right now
     default: break;
     }
 }
-// ---------------- lobby placement (0.23) ----------------
-// The ladder says who sits in which slot. Every 0.5 s until the match loads: in my slot - stay; my slot free - go there;
-// sitting in somebody else's player slot - step into a free observer slot so its owner can come in; in an observer slot
-// with my slot taken - wait. Swap requests are accepted automatically (above). Returns 1 when I am in my slot.
+// ---------------- lobby placement (0.29: by team) ----------------
+// The ladder still sends a slot per player; only its half counts: slots 0..n-1 are one team, 4..4+n-1 the other (start positions are
+// random, so the place inside the team does not matter). Every client works out the same plan from the same lobby:
+//  - wait until every player of the match sits in a player slot;
+//  - the top half belongs to the team that already has more players there (a tie: the team of slot 1) - the teams are equal, the
+//    side doesn't matter, and this way 2v2 and 3v3 need one swap at most;
+//  - players in the wrong half, top ones by slot and bottom ones by slot, make pairs; the top one of a pair asks the bottom one to
+//    swap ("Move to this slot" on a taken slot asks its player), the bottom one's MMFind accepts it (auto-accept in a ladder lobby).
+static int team_of(int slot) { return slot < 4 ? 0 : 1; }
+static int my_team(void) { return g_mySlot < 0 ? -1 : team_of(g_mySlot); }
+static int team_plan(const unsigned long long *ids, int pr[][2]) {     // pairs to swap (top slot, bottom slot); -1: not everyone in yet
+    int n = team_n(), tm[8], seen = 0;
+    for (int i = 0; i < 8; i++) {
+        tm[i] = -1; if (!ids[i]) continue;
+        int r = in_roster(ids[i]), t = r >= 0 ? team_of(g_rSlot[r]) : is_me(ids[i]) ? my_team() : -1;
+        if (t < 0) continue;                                              // a watcher or a stranger
+        if (is_obs_slot(i)) return -1;                                    // a player still in an observer slot
+        tm[i] = t; seen++;
+    }
+    if (seen < g_nR) return -1;
+    int a = 0; for (int i = 0; i < n; i++) if (tm[i] == 0) a++;
+    int top = 2 * a > n ? 0 : 2 * a < n ? 1 : (tm[0] >= 0 ? tm[0] : 0);
+    int bt[4], bb[4], nt = 0, nb = 0;
+    for (int i = 0; i < n; i++) if (tm[i] >= 0 && tm[i] != top) bt[nt++] = i;
+    for (int i = 4; i < 4 + n; i++) if (tm[i] >= 0 && tm[i] == top) bb[nb++] = i;
+    int k = nt < nb ? nt : nb;
+    for (int i = 0; i < k; i++) { pr[i][0] = bt[i]; pr[i][1] = bb[i]; }
+    return k;
+}
+// every 0.5 s until the match loads; returns 1 when the teams are right (my ready mark can go on)
 static int place_step(DWORD now) {
-    static DWORD lastPoll, lastMove; static int inPlace;
+    static DWORD lastPoll, lastMove, lastAsk; static int inPlace, asks;
     if (now - lastPoll < 500) return inPlace;
     lastPoll = now;
     unsigned long long ids[8]; if (lobby_ids(ids) < 0) return inPlace;
     int cur = -1; for (int i = 0; i < 8; i++) if (is_me(ids[i])) cur = i;
-    int target = g_mySlot;
-    if (target < 0 || cur < 0) return inPlace = 0;
-    if (cur == target) return inPlace = 1;
-    inPlace = 0;
-    if (now - lastMove < 1200 + (unsigned)(g_mySteam % 7) * 100) return 0;      // a move needs a moment to show; players don't move in lockstep
-    if (!ids[target]) { lastMove = now; logmsg("place: %d -> my slot %d", cur, target); slot_do(target, is_obs_slot(target) ? CB_MOVE_OBS : CB_MOVE); return 0; }
-    if (!is_obs_slot(cur))                                                        // I hold someone else's player slot: make room for him
-        for (int i = 0; i < 8; i++) if (is_obs_slot(i) && !ids[i]) { lastMove = now; logmsg("place: slot %d is not mine (mine %d is taken) -> observer slot %d", cur, target, i); slot_do(i, CB_MOVE_OBS); return 0; }
-    return 0;
+    if (my_team() < 0 || cur < 0) return inPlace = 0;
+    if (is_obs_slot(cur)) {                                               // came in as an observer: any free player slot (the plan sorts the teams)
+        if (now - lastMove < 1200 + (unsigned)(g_mySteam % 7) * 100) return inPlace = 0;   // players don't move in lockstep
+        for (int i = 0; i < 8; i++) if (!is_obs_slot(i) && !ids[i]) { lastMove = now; logmsg("place: observer slot %d -> free player slot %d", cur, i); slot_do(i, CB_MOVE); break; }
+        return inPlace = 0;
+    }
+    int pr[4][2], k = team_plan(ids, pr);
+    if (k < 0) return inPlace = 0;                                        // wait for everyone
+    if (k == 0) { asks = 0; return inPlace = 1; }
+    for (int i = 0; i < k; i++) {
+        if (pr[i][1] == cur) return inPlace = 0;                          // the top one of my pair asks me
+        if (pr[i][0] != cur) continue;
+        if (now - lastAsk < 4000) return inPlace = 0;                    // the swap needs a moment to show
+        lastAsk = now; asks++;
+        logmsg("place: wrong team half, asking slot %d to swap with my slot %d (pair %d of %d, ask %d)", pr[i][1], cur, i + 1, k, asks);
+        slot_do(pr[i][1], CB_MOVE);
+        return inPlace = 0;
+    }
+    return inPlace = 0;                                                   // my team is right, the others are still swapping
 }
 // host: the ladder's game options, observer slots open, strangers out - until the match loads
 static void host_step(DWORD now) {
@@ -1108,11 +1146,12 @@ static void tick(void) {
         if (in_state() > 2000 && !g_bots) host_step(now);
         if (!obsOpened && in_state() > 1500) { obsOpened = 1; slot_do(team_n(), CB_OPEN_OBS); }   // after the map change (it closes them again)
         unsigned long long ids[8]; if (lobby_ids(ids) < 0) break;
-        int placed = 0, wIn = 0, stranger = -1;
+        int placed = 0, wIn = 0, stranger = -1, pr[4][2], plan = team_plan(ids, pr);
+        if (!g_bots && in_state() > 2000) place_step(now);                // the host swaps too when its half is the wrong one
         for (int i = 0; i < 8; i++) if (ids[i]) {
             if (is_me(ids[i])) continue;
             int r = in_roster(ids[i]);
-            if (r >= 0) { if (g_rSlot[r] == i) placed++; }
+            if (r >= 0) { if (plan == 0 || (g_bots && g_rSlot[r] == i)) placed++; }
             else if (is_watcher(ids[i])) { if (is_obs_slot(i)) wIn++; }
             else if (!name_known(g_slotName[i])) stranger = i;
         }
@@ -1127,7 +1166,7 @@ static void tick(void) {
         }
         if (stranger >= 0 && now - lastKick > 1500) { lastKick = now; logmsg("kick stranger %llu in slot %d", ids[stranger], stranger); slot_do(stranger, CB_KICK); }
         int need = g_nR - 1;                                          // everyone but me in his slot
-        if (now - lastLog > 3000) { lastLog = now; logmsg("lobby: placed %d/%d, watchers %d/%d, stranger slot %d", placed, need, wIn, g_nW, stranger); }
+        if (now - lastLog > 3000) { lastLog = now; logmsg("lobby: placed %d/%d (swaps left %d), watchers %d/%d, stranger slot %d", placed, need, plan, wIn, g_nW, stranger); }
         int nPlayerSlots = 2 * team_n(), aiDone = 0; for (int i = 0; i < 8; i++) if (!is_obs_slot(i) && (aiMask & (1 << i))) aiDone++;
         int ready = placed >= need && stranger < 0 && (need > 0 || (g_bots && aiDone >= nPlayerSlots - (aivai ? 0 : 1) && now - lastAi > 1500));
         if (wIn >= g_nW && g_nW) { if (!wSince) wSince = now; } else wSince = 0;
@@ -1237,7 +1276,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.28 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.29 start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;

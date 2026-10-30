@@ -4,6 +4,13 @@ Every version gets an entry here before it reaches `main`. CI then tags `vX.Y.Z`
 version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entries since the previous `X.Y.0`.
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
+## 0.1.6 — 2026-10-30
+- MMFind 0.29 (outside addons.json, released by hand): placement by team. The ladder lobby uses random start positions (the game
+  shuffles them inside each team, checked on 6p maps), so only the team counts, not the slot. The top half goes to the team that
+  already has more players there (a tie: the team of slot 1); the players in the wrong half pair up and the top one asks the bottom
+  one to swap ("Request to swap slots", the same handler as "Move to this slot" 0x492E02); the other MMFind accepts it. 2v2 and 3v3
+  need one swap at most (checked on all 746 arrangements), instead of the walk through observer slots. The host swaps too.
+
 ## 0.1.5 — 2026-10-30
 - LobbyStats v0.9.3 - the cooldown numbers get their own tick in the launcher (off by default, as in 0.9.2): addons.json
   now lists the LobbyStats options (match timer, loading screen ratings, join sound and the new `[Cooldowns] Enabled`), so
