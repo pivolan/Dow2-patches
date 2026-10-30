@@ -1215,10 +1215,19 @@ static void __stdcall upd_hook(float dt) {
 static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     HMODULE m = GetModuleHandleA(dll); MODULEINFO mi;
     if (!m || !GetModuleInformation(GetCurrentProcess(), m, &mi, sizeof mi) || IsBadReadPtr((void *)slot, 4)) return 0;
-    DWORD cur = *(DWORD *)slot, old;
-    if (!VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) return 0;
-    *orig = (void *)cur; *(DWORD *)slot = (DWORD)fn; VirtualProtect((void *)slot, 4, old, &old);
-    return 1;
+    // one import-table write at a time across all our DLLs (LobbyStats hooks this same Shark slot from its own thread; two
+    // threads opening and closing the page at once crashed the game at start): the shared mutex, the slot read again under
+    // it (the other hook may be in by now - we chain onto it), the write through WriteProcessMemory (fails, never crashes)
+    char n[64]; wsprintfA(n, "Local\\dow2patch_iat_%lu", GetCurrentProcessId());
+    HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx) WaitForSingleObject(mx, 5000);
+    int ok = 0; DWORD cur = *(volatile DWORD *)slot, old;
+    if (VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) {
+        SIZE_T w = 0;
+        if (WriteProcessMemory(GetCurrentProcess(), (void *)slot, &fn, 4, &w) && w == 4) { *orig = (void *)cur; ok = 1; }
+        VirtualProtect((void *)slot, 4, old, &old);
+    }
+    if (mx) { ReleaseMutex(mx); CloseHandle(mx); }
+    return ok;
 }
 static DWORD WINAPI installer(LPVOID _) {
     for (int i = 0; i < 180; i++) {
@@ -1276,7 +1285,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.29 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.30 start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;
