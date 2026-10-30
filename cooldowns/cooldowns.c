@@ -353,7 +353,11 @@ static void install(void) {
 // called by LobbyStats once: dir = its folder (with a trailing backslash), ini = its ini file
 void cd_start(const wchar_t *dir, const wchar_t *ini) {
     _snwprintf(g_log, MAX_PATH, L"%lsCooldowns.log", dir);
+    #ifdef CD_STANDALONE
+    g_on = GetPrivateProfileIntW(L"Cooldowns", L"Enabled", 1, ini);   // Cooldowns.dll: its launcher tick is the switch
+#else
     g_on = GetPrivateProfileIntW(L"Cooldowns", L"Enabled", 0, ini);
+#endif
     g_size = GetPrivateProfileIntW(L"Cooldowns", L"Size", g_size, ini);
     if (g_size < 12) g_size = 12; if (g_size > 64) g_size = 64;
     wchar_t c[16]; GetPrivateProfileStringW(L"Cooldowns", L"Color", L"FFF8F0", c, 16, ini);

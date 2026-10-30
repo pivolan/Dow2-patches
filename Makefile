@@ -6,7 +6,7 @@ OUT = build
 STATS_HOST ?= rts.fintebtc.de
 STATS = $(if $(STATS_HOST),-DSTATS_HOST='L"$(STATS_HOST)"',)
 
-all: $(OUT)/ObsFix.dll $(OUT)/LobbyStats.dll $(OUT)/winmm.dll $(OUT)/FrameProbe.dll $(OUT)/ReinforceFix.dll
+all: $(OUT)/ObsFix.dll $(OUT)/LobbyStats.dll $(OUT)/LoadingRatings.dll $(OUT)/Cooldowns.dll $(OUT)/MatchTimer.dll $(OUT)/winmm.dll $(OUT)/FrameProbe.dll $(OUT)/ReinforceFix.dll
 all: $(OUT)/CGNumbers.dll $(OUT)/EliteAI.dll $(OUT)/Reverse.dll $(OUT)/MMFind.dll
 
 $(OUT):
@@ -14,14 +14,18 @@ $(OUT):
 $(OUT)/ObsFix.dll: obsfix/obsfix.c | $(OUT)
 	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
 # LobbyStats carries the match clock (matchtimer.c with -DMT_EMBED) and the cooldown numbers (cooldowns.c): one Direct3D hook for all
-$(OUT)/LobbyStats.dll: lobbystats/lobbystats.c lobbystats/join_sound.h matchtimer/matchtimer.c cooldowns/cooldowns.c common/gamefont.h | $(OUT)
-	$(CC) $(CFLAGS) $(STATS) -DMT_EMBED -shared -o $@ lobbystats/lobbystats.c matchtimer/matchtimer.c cooldowns/cooldowns.c -lwinhttp -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--kill-at
-$(OUT)/winmm.dll: vanilla-loader/winmm_proxy.c vanilla-loader/winmm.def | $(OUT)
-	$(CC) -O2 -s -shared -o $@ $^ -static-libgcc
-$(OUT)/FrameProbe.dll: frameprobe/frameprobe.c | $(OUT)
-	$(CC) $(CFLAGS) -Wno-unused-variable -shared -o $@ $< -lpsapi -lwinmm -static-libgcc
-$(OUT)/ReinforceFix.dll: reinforcefix/reinforcefix.c | $(OUT)
-	$(CC) $(CFLAGS) -shared -o $@ $< -static-libgcc
+$(OUT)/LobbyStats.dll: lobbystats/lobbystats.c lobbystats/join_sound.h common/gamefont.h | $(OUT)
+	$(CC) $(CFLAGS) $(STATS) -shared -o $@ lobbystats/lobbystats.c -lwinhttp -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--kill-at
+
+# 30.10.2026: every feature its own add-on - the loading screen ratings, the cooldown numbers, the match clock (MatchTimer.dll)
+$(OUT)/LoadingRatings.dll: lobbystats/lobbystats.c matchtimer/matchtimer.c common/gamefont.h | $(OUT)
+	$(CC) $(CFLAGS) $(STATS) -DLS_LOADING -DMT_EMBED -shared -o $@ lobbystats/lobbystats.c matchtimer/matchtimer.c -lwinhttp -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--kill-at
+
+$(OUT)/MatchTimer.dll: matchtimer/matchtimer.c common/gamefont.h | $(OUT)
+	$(CC) $(CFLAGS) -shared -o $@ $< -lpsapi -lgdi32 -static-libgcc -Wl,--exclude-all-symbols
+
+$(OUT)/Cooldowns.dll: cooldowns/cooldowns_main.c cooldowns/cooldowns.c matchtimer/matchtimer.c common/gamefont.h | $(OUT)
+	$(CC) $(CFLAGS) -DMT_EMBED -DCD_STANDALONE -shared -o $@ cooldowns/cooldowns_main.c cooldowns/cooldowns.c matchtimer/matchtimer.c -lpsapi -lgdi32 -lwinmm -static-libgcc -Wl,--exclude-all-symbols
 
 clean:
 	rm -rf $(OUT)

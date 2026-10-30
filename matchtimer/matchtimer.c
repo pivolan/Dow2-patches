@@ -553,6 +553,7 @@ static int hook_by_nullref(void) {
     return SUCCEEDED(hr);
 }
 
+static int g_noDevice;                          // LoadingRatings: the match state only, no Direct3D at all
 static DWORD WINAPI worker(LPVOID _) {
     gf_load(&g_gf, GAME_FONT, NULL);                                            // from the game's files; on failure Book Antiqua
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
@@ -562,8 +563,8 @@ static DWORD WINAPI worker(LPVOID _) {
         p_D3DXCreateSprite = (D3DXCreateSprite_t)GetProcAddress(h, "D3DXCreateSprite");
         if (p_D3DXCreateFontA && p_D3DXCreateSprite) { logmsg("using %s", vers[i]); break; }
     }
-    if (!p_D3DXCreateFontA || !p_D3DXCreateSprite) { logmsg("no d3dx9_*.dll with D3DXCreateFontA - the clock can't be drawn"); return 0; }
-    int sim = 0, d3d = 0;
+    if (!g_noDevice && (!p_D3DXCreateFontA || !p_D3DXCreateSprite)) { logmsg("no d3dx9_*.dll with D3DXCreateFontA - the clock can't be drawn"); return 0; }
+    int sim = 0, d3d = g_noDevice;
     for (int i = 0; i < 120 && !(sim && d3d); i++) {                            // only cheap checks here: no devices, no windows
         if (!sim && (sim = iat_hook(IAT_SIM, "SimEngine.dll", hk_sim, (void **)&o_sim))) {
             int pre = iat_hook(IAT_SIM_PRE, "SimEngine.dll", hk_pre, (void **)&o_pre);
@@ -580,6 +581,7 @@ static DWORD WINAPI worker(LPVOID _) {
     }
     if (!sim) { logmsg("World::Simulate import not found at %08X - not DOW2.exe 3.19? The clock stays off", IAT_SIM); return 0; }
     if (!d3d) { logmsg("d3d9.dll never came - the clock stays off"); return 0; }
+    if (g_noDevice) return 0;
     Sleep(30000);                                                               // the game creates its device at start
     if (!g_devHooked && !g_totalCalls) { logmsg("the game made its device before we came - one NULLREF try"); hook_by_nullref(); }
     return 0;
@@ -600,7 +602,27 @@ void mt_start(const wchar_t *dir, const wchar_t *ini) {
     // tick counter (match running / loading screen, for the loading screen ratings and the cooldown numbers) and the one device
     // hook through which LobbyStats draws; nothing of the clock is drawn or created, [MatchTimer] Enabled is ignored.
     g_clockOff = 1;
-    logmsg("MatchTimer inside LobbyStats: the clock is removed (0.9.4), only the match state is kept");
+    logmsg("match state and Direct3D hook for the cooldown numbers (no clock)");
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));   // the device hook is needed for the rest even without the clock
+}
+void mt_start_nodevice(const wchar_t *dir, const wchar_t *ini) {      // LoadingRatings.dll: sim hooks only
+    _snwprintf(g_log, MAX_PATH, L"%lsMatchState.log", dir); lstrcpynW(g_ini, ini, MAX_PATH);
+    g_clockOff = 1; g_noDevice = 1;
+    logmsg("match state for the loading screen ratings (no clock, no Direct3D)");
+    CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
+}
+#else
+// MatchTimer.dll on its own again (30.10.2026, owner: every feature its own add-on and launcher tick)
+BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
+    if (reason != DLL_PROCESS_ATTACH) return TRUE;
+    DisableThreadLibraryCalls(h);
+    GetModuleFileNameW(h, g_log, MAX_PATH); wchar_t *sl = wcsrchr(g_log, L'\\'); if (sl) sl[1] = 0; else g_log[0] = 0;
+    wcscpy(g_ini, g_log); wcscat(g_ini, L"MatchTimer.ini"); wcscat(g_log, L"MatchTimer.log");
+    load_ini();
+    logmsg("MatchTimer v4 (own add-on)");
+    if (already_loaded("MatchTimer")) { logmsg("another MatchTimer copy is already active in this game, this one stays idle"); return TRUE; }
+    if (!g_enabled) { logmsg("disabled in MatchTimer.ini"); return TRUE; }
+    CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
+    return TRUE;
 }
 #endif

@@ -16,6 +16,18 @@
 // It only reads the lobby: no kicking, no chat commands, no extra menus.
 //
 // Works only with DOW2.exe 3.19 (Steam): the prologue bytes are checked before installing.
+// One source, two add-ons (owner 30.10.2026: every feature its own DLL and its own launcher tick):
+//   LobbyStats.dll      - the lobby: rating after the names, the stats tooltip, the main menu tooltip, the join sound
+//   LoadingRatings.dll  - built with -DLS_LOADING: only the rating after the names on the loading screen (reads the lobby's
+//                         roster, changes nothing in the lobby)
+// The match clock (MatchTimer.dll) and the cooldown numbers (Cooldowns.dll) are add-ons of their own again.
+#ifdef LS_LOADING
+#define LS_NAME "LoadingRatings"
+#else
+#define LS_NAME "LobbyStats"
+#endif
+#define LS_W_(x) L##x
+#define LS_W(x) LS_W_(x)
 #include <windows.h>
 #include <mmsystem.h>
 #include <winhttp.h>
@@ -56,7 +68,7 @@ static wchar_t g_dir[MAX_PATH];
 static int g_showInName = 1, g_stats = 1;                  // g_stats=0: leave names and tooltips alone
 
 static void logmsg(const char *fmt, ...) {
-    wchar_t p[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsLobbyStats.log", g_dir);
+    wchar_t p[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%ls" LS_W(LS_NAME) L".log", g_dir);
     FILE *f = _wfopen(p, L"a"); if (!f) return;
     SYSTEMTIME t; GetLocalTime(&t); fprintf(f, "%02d:%02d:%02d ", t.wHour, t.wMinute, t.wSecond);
     va_list a; va_start(a, fmt); vfprintf(f, fmt, a); va_end(a); fputc('\n', f); fclose(f);
@@ -73,7 +85,7 @@ static Entry *find_or_add(const wchar_t *name) {
 }
 
 // ---------- disk cache: lines "name\trating\twins\tlosses\thours" in UTF-8 ----------
-static void cache_path(wchar_t *p) { _snwprintf(p, MAX_PATH, L"%lsLobbyStats.cache", g_dir); }
+static void cache_path(wchar_t *p) { _snwprintf(p, MAX_PATH, L"%ls" LS_W(LS_NAME) L".cache", g_dir); }
 static void parse_lines(char *buf, int from_disk) {
     for (char *line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         char *f[6] = {0}; int n = 0; char *p = line;
@@ -299,6 +311,9 @@ static void decorate(GFxValue *args, unsigned count) {
             if (!e) { e = find_or_add(key); e->fetched = 0; }
         }
         if (!e->known || !g_stats) continue;
+#ifdef LS_LOADING
+        continue;                                         // LoadingRatings: the lobby itself stays untouched
+#endif
         int games = e->wins + e->losses, wr = games ? (e->wins * 100 + games / 2) / games : 0;
         if (g_showInName) {
             _snwprintf(g_nameBuf[i], 127, L"%ls  [%d]", name, e->rating); g_nameBuf[i][127] = 0;
@@ -325,7 +340,9 @@ static void decorate(GFxValue *args, unsigned count) {
                 int was = 0; for (int j = 0; j < g_nprev; j++) if (!wcscmp(g_prevKey[j], g_seen[k].key)) { was = 1; break; }
                 if (!was) { joined = g_seen[k].name; break; }
             }
+#ifndef LS_LOADING
             if (joined) join_alert(joined);
+#endif
             g_nprev = 0; for (int k = 0; k < g_nseen && k < 16; k++) { wcsncpy(g_prevKey[g_nprev], g_seen[k].key, 63); g_prevKey[g_nprev++][63] = 0; }
             logmsg("lobby: host=%d, max players=%d, my id=%llu, people=%d", isHost, g_maxPlayers, g_localId, g_nseen);
             for (int k = 0; k < g_nseen; k++) {
@@ -424,7 +441,11 @@ static wchar_t g_tagBuf[128];
 // name was set before the rating came - the frame hook (tag_frame) sets it again once with the rating
 #define MENU_MOVIE_VTBL 0x01094C10                    // the main menu movie (SetGamerTag, Version, Enable*Button)
 static void *volatile g_menuMovie; static GFxValue g_tagArg1; static volatile int g_tagDone;
+#ifdef LS_LOADING
 int mt_online(void); int mt_ticking(void);
+#else
+static int mt_online(void) { return 0; } static int mt_ticking(void) { return 0; }   // LobbyStats: no loading screen hook
+#endif
 static int g_loadOn = 1;               // [LoadingScreen] Ratings: the rating after each name on the loading screen
 static volatile int g_front;          // the main menu (with the name bar) is the current screen
 static wchar_t g_menuName[64];        // own name from SetGamerTag (under g_lock), for the main menu tooltip
@@ -883,39 +904,7 @@ static void draw_tip(IDirect3DDevice9 *dev) {
     }
     if (haveVp) IDirect3DDevice9_SetViewport(dev, &vp);
 }
-// ---------- the one Direct3D hook is MatchTimer's (matchtimer.c, MT_EMBED): we draw through its callbacks ----------
-extern void (*mt_extra_draw)(IDirect3DDevice9 *);
-extern void (*mt_extra_lost)(IDirect3DDevice9 *);
-extern void (*mt_extra_reset)(IDirect3DDevice9 *, HRESULT);
-int mt_loading(void); int mt_online(void); int mt_ticking(void); void mt_start(const wchar_t *dir, const wchar_t *ini);
 static volatile int g_d3dReady;                     // d3dx and the game font loaded (tip_worker)
-// seconds left on recharging abilities (cooldowns.c), drawn through the same hook
-void cd_start(const wchar_t *dir, const wchar_t *ini); void cd_draw(IDirect3DDevice9 *dev);
-void cd_lost(IDirect3DDevice9 *dev); void cd_reset(IDirect3DDevice9 *dev, HRESULT hr);
-// the loading screen has no Flash calls of its own: it comes right after the lobby's start countdown ("Cancel Countdown
-// (10)" on the cancel button, any language: a number in brackets), so the box shows from the countdown to the first sim tick
-static void ls_draw(IDirect3DDevice9 *dev) {
-    cd_draw(dev);
-    if (!g_d3dReady) return;
-    if (g_front && !g_gameTipWorks) draw_tip(dev);  // the box of ours only while the game's own tooltip hasn't got the stats
-}
-// ID3DXFont/ID3DXSprite hold state blocks and video memory: they must let go before Reset or Reset fails
-static void ls_lost(IDirect3DDevice9 *dev) {
-    cd_lost(dev);
-    if (dev == g_fontDev && !g_lost && (g_font || g_sprite)) {
-        if (g_font) g_font->lpVtbl->OnLostDevice(g_font);
-        if (g_sprite) g_sprite->lpVtbl->OnLostDevice(g_sprite);
-        g_lost = 1;
-    }
-}
-static void ls_reset(IDirect3DDevice9 *dev, HRESULT hr) {
-    cd_reset(dev, hr);
-    if (g_lost && SUCCEEDED(hr)) {
-        if (g_font) g_font->lpVtbl->OnResetDevice(g_font);
-        if (g_sprite) g_sprite->lpVtbl->OnResetDevice(g_sprite);
-        g_lost = 0;
-    }
-}
 static DWORD WINAPI tip_worker(LPVOID _) {
     gf_load(&g_tipFont, "Arial Unicode MS", NULL);                  // from the game's files; on failure Windows Arial
     const char *vers[] = { "d3dx9_43.dll", "d3dx9_42.dll", "d3dx9_41.dll", "d3dx9_40.dll", "d3dx9_38.dll", "d3dx9_35.dll", "d3dx9_34.dll", "d3dx9_31.dll", "d3dx9_30.dll", NULL };
@@ -952,7 +941,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
     DisableThreadLibraryCalls(h);
     GetModuleFileNameW(h, g_dir, MAX_PATH); wchar_t *sl = wcsrchr(g_dir, L'\\'); if (sl) sl[1] = 0; else g_dir[0] = 0;
-    wchar_t ini[MAX_PATH]; _snwprintf(ini, MAX_PATH, L"%lsLobbyStats.ini", g_dir);
+    wchar_t ini[MAX_PATH]; _snwprintf(ini, MAX_PATH, L"%ls" LS_W(LS_NAME) L".ini", g_dir);
     g_showInName = GetPrivateProfileIntW(L"LobbyStats", L"ShowRatingInName", 1, ini);
     g_stats       = GetPrivateProfileIntW(L"LobbyStats", L"Stats", 1, ini);
     GetPrivateProfileStringW(L"LobbyStats", L"Server", STATS_HOST, g_server, 128, ini);
@@ -961,7 +950,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     g_tipDX   = GetPrivateProfileIntW(L"MenuTooltip", L"DX", g_tipDX, ini);
     g_tipDY   = GetPrivateProfileIntW(L"MenuTooltip", L"DY", g_tipDY, ini);
     g_tipMinW = GetPrivateProfileIntW(L"MenuTooltip", L"MinWidth", g_tipMinW, ini);
-    g_loadOn  = GetPrivateProfileIntW(L"LoadingScreen", L"Ratings", 1, ini);
+#ifdef LS_LOADING
+    g_loadOn = 1;                                    // the add-on is the switch (its tick in the launcher)
+#else
+    g_loadOn = 0;
+#endif
     g_joinSound = GetPrivateProfileIntW(L"Lobby", L"JoinSound", 1, ini);
     GetPrivateProfileStringW(L"Lobby", L"SoundFile", L"", g_soundFile, MAX_PATH, ini);
     if (g_soundFile[0] && !wcschr(g_soundFile, L':')) {                 // relative to the add-on folder
@@ -970,16 +963,20 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.9.4, join sound %d%s", g_joinSound, g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
-    if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
+    logmsg(LS_NAME " v0.10.0, join sound %d%s", g_joinSound, g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    if (already_loaded(LS_NAME)) { logmsg("another " LS_NAME " copy is already active in this game, this one stays idle"); return TRUE; }
     g_gameTip = GetPrivateProfileIntW(L"MenuTooltip", L"Game", 1, ini);
     { wchar_t w[128]; GetPrivateProfileStringW(L"MenuTooltip", L"Instance", L"" TIP_INST, w, 128, ini); WideCharToMultiByte(CP_ACP, 0, w, -1, g_tipInst, sizeof g_tipInst, NULL, NULL); }
-    load_cache(); install(); if (g_loadOn) install_wset(); if (g_stats && g_gameTip) install_tipget();
+#ifdef LS_LOADING
+    { void mt_start_nodevice(const wchar_t *dir, const wchar_t *ini);
+      load_cache(); install(); install_wset();
+      CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
+      mt_start_nodevice(g_dir, ini); }               // match state only (loading screen -> first sim tick), no clock, no Direct3D
+#else
+    load_cache(); install(); if (g_stats && g_gameTip) install_tipget();
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     if (g_stats) CloseHandle(CreateThread(NULL, 0, tip_worker, NULL, 0, NULL));
-    mt_extra_draw = ls_draw; mt_extra_lost = ls_lost; mt_extra_reset = ls_reset;
-    mt_start(g_dir, ini);                            // the clock and the one device hook
-    cd_start(g_dir, ini);                            // cooldown numbers on the ability buttons
+#endif
     return TRUE;
 }
 
