@@ -1,14 +1,9 @@
 {
   "_readme": "What the launcher gives players. Raise an add-on's version and merge to main: the server builds and publishes it within minutes. See README, Publishing.",
   "lobbystats": {
-    "version": "0.9.3",
+    "version": "0.9.4",
     "dll": "LobbyStats.dll",
     "options": [
-      {
-        "id": "timer",
-        "name": { "en": "Match timer", "ru": "Таймер матча", "es": "Cronómetro", "fr": "Chrono de partie", "de": "Spieluhr" },
-        "ini": "Elite_DLLs/LobbyStats.ini", "section": "MatchTimer", "key": "Enabled", "default": true
-      },
       {
         "id": "loading",
         "name": {
@@ -18,7 +13,10 @@
           "fr": "Classements à l'écran de chargement",
           "de": "Ratings im Ladebildschirm"
         },
-        "ini": "Elite_DLLs/LobbyStats.ini", "section": "LoadingScreen", "key": "Ratings", "default": true
+        "ini": "Elite_DLLs/LobbyStats.ini",
+        "section": "LoadingScreen",
+        "key": "Ratings",
+        "default": true
       },
       {
         "id": "joinsound",
@@ -29,7 +27,10 @@
           "fr": "Son quand quelqu un entre dans le lobby (jeu en arrière-plan)",
           "de": "Ton, wenn jemand die Lobby betritt (Spiel im Hintergrund)"
         },
-        "ini": "Elite_DLLs/LobbyStats.ini", "section": "Lobby", "key": "JoinSound", "default": true
+        "ini": "Elite_DLLs/LobbyStats.ini",
+        "section": "Lobby",
+        "key": "JoinSound",
+        "default": true
       },
       {
         "id": "cooldowns",
@@ -40,7 +41,10 @@
           "fr": "Secondes de recharge sur les boutons de capacités",
           "de": "Abklingzeit in Sekunden auf den Fähigkeitstasten"
         },
-        "ini": "Elite_DLLs/LobbyStats.ini", "section": "Cooldowns", "key": "Enabled", "default": false
+        "ini": "Elite_DLLs/LobbyStats.ini",
+        "section": "Cooldowns",
+        "key": "Enabled",
+        "default": false
       }
     ]
   },

@@ -702,6 +702,22 @@ static void __stdcall tag_frame(float dt) {
     logmsg("main menu: the name set again with the rating (it came after the game set the name)");
 }
 // slot already hooked by another DLL (MatchTimer, FrameProbe) - chain onto it if it points to executable code
+// One import-table write at a time across all our DLLs (a mutex per game process): two threads both opening the page for
+// writing and then putting the old protection back crashed the game at start when one closed it while the other still wrote
+// (LobbyStats 0.9.x: its tooltip thread and the match clock hook the same page of DOW2.exe's imports). The write itself goes
+// through WriteProcessMemory, which fails instead of crashing if somebody else closed the page anyway.
+static int iat_write(DWORD slot, void *fn, void **orig) {
+    char n[64]; wsprintfA(n, "Local\\dow2patch_iat_%lu", GetCurrentProcessId());
+    HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx) WaitForSingleObject(mx, 5000);
+    int ok = 0; DWORD old, cur = *(volatile DWORD *)slot;                  // read again under the lock: another hook may be in by now
+    if (VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) {
+        SIZE_T w = 0;
+        if (WriteProcessMemory(GetCurrentProcess(), (void *)slot, &fn, 4, &w) && w == 4) { *orig = (void *)cur; ok = 1; }
+        VirtualProtect((void *)slot, 4, old, &old);
+    }
+    if (mx) { ReleaseMutex(mx); CloseHandle(mx); }
+    return ok;
+}
 static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     HMODULE m = GetModuleHandleA(dll); MODULEINFO mi;
     if (!m || !GetModuleInformation(GetCurrentProcess(), m, &mi, sizeof mi) || IsBadReadPtr((void *)slot, 4)) return 0;
@@ -710,10 +726,7 @@ static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
         MEMORY_BASIC_INFORMATION mb;
         if (!VirtualQuery((void *)cur, &mb, sizeof mb) || !(mb.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) return 0;
     }
-    DWORD old; if (!VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) return 0;
-    *orig = (void *)cur; *(DWORD *)slot = (DWORD)fn;
-    VirtualProtect((void *)slot, 4, old, &old);
-    return 1;
+    return iat_write(slot, fn, orig);
 }
 
 static ID3DXFont *g_font; static ID3DXSprite *g_sprite;
@@ -957,7 +970,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
     _snwprintf(g_probeLog, MAX_PATH, L"%lsLobbyStats_invoke.log", g_dir);
     InitializeCriticalSection(&g_lock); InitializeCriticalSection(&g_probeLock); g_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_probeLast = GetTickCount();
-    logmsg("LobbyStats v0.9.3, join sound %d%s", g_joinSound, g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
+    logmsg("LobbyStats v0.9.4, join sound %d%s", g_joinSound, g_probe ? ", UI probe on (LobbyStats_invoke.log)" : "");
     if (already_loaded("LobbyStats")) { logmsg("another LobbyStats copy is already active in this game, this one stays idle"); return TRUE; }
     g_gameTip = GetPrivateProfileIntW(L"MenuTooltip", L"Game", 1, ini);
     { wchar_t w[128]; GetPrivateProfileStringW(L"MenuTooltip", L"Instance", L"" TIP_INST, w, 128, ini); WideCharToMultiByte(CP_ACP, 0, w, -1, g_tipInst, sizeof g_tipInst, NULL, NULL); }

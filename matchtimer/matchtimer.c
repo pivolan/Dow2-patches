@@ -180,6 +180,22 @@ static int clock_visible(void) {
 }
 
 // slot already hooked by another DLL (e.g. FrameProbe) - chain onto it if it points to executable code (as in FrameProbe)
+// One import-table write at a time across all our DLLs (a mutex per game process): two threads both opening the page for
+// writing and then putting the old protection back crashed the game at start when one closed it while the other still wrote
+// (LobbyStats 0.9.x: its tooltip thread and the match clock hook the same page of DOW2.exe's imports). The write itself goes
+// through WriteProcessMemory, which fails instead of crashing if somebody else closed the page anyway.
+static int iat_write(DWORD slot, void *fn, void **orig) {
+    char n[64]; wsprintfA(n, "Local\\dow2patch_iat_%lu", GetCurrentProcessId());
+    HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx) WaitForSingleObject(mx, 5000);
+    int ok = 0; DWORD old, cur = *(volatile DWORD *)slot;                  // read again under the lock: another hook may be in by now
+    if (VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) {
+        SIZE_T w = 0;
+        if (WriteProcessMemory(GetCurrentProcess(), (void *)slot, &fn, 4, &w) && w == 4) { *orig = (void *)cur; ok = 1; }
+        VirtualProtect((void *)slot, 4, old, &old);
+    }
+    if (mx) { ReleaseMutex(mx); CloseHandle(mx); }
+    return ok;
+}
 static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
     HMODULE m = GetModuleHandleA(dll); MODULEINFO mi;
     if (!m || !GetModuleInformation(GetCurrentProcess(), m, &mi, sizeof mi) || IsBadReadPtr((void *)slot, 4)) return 0;
@@ -191,10 +207,7 @@ static int iat_hook(DWORD slot, const char *dll, void *fn, void **orig) {
         if (!GetModuleInformation(GetCurrentProcess(), exe, &me, sizeof me) || slot < (DWORD)me.lpBaseOfDll || slot >= (DWORD)me.lpBaseOfDll + me.SizeOfImage) return 0;
         char nm[MAX_PATH]; GetModuleFileNameA(exe, nm, MAX_PATH); if (!strstr(nm, "DOW2") && !strstr(nm, "dow2")) return 0;
     }
-    DWORD old; if (!VirtualProtect((void *)slot, 4, PAGE_READWRITE, &old)) return 0;
-    *orig = (void *)cur; *(DWORD *)slot = (DWORD)fn;
-    VirtualProtect((void *)slot, 4, old, &old);
-    return 1;
+    return iat_write(slot, fn, orig);
 }
 
 // ---------- minimal ID3DXFont / ID3DXSprite (no d3dx9 headers needed; only the methods we call are typed) ----------
@@ -412,11 +425,11 @@ float mt_ms_per_tick(void) { return g_ticks > 20 && g_play ? (float)g_play / g_t
 #endif
 static HRESULT WINAPI hk_EndScene(IDirect3DDevice9 *dev) {
     DWORD now = GetTickCount();
+    InterlockedIncrement(&g_totalCalls); g_calls++;                    // before any early return: the worker's late-hook fallback looks at it
 #ifdef MT_EMBED
     if (mt_extra_draw) mt_extra_draw(dev);
     if (g_clockOff) return o_EndScene(dev);
 #endif
-    InterlockedIncrement(&g_totalCalls); g_calls++;
     reload_ini(now);
     int vis = g_enabled && clock_visible();
     if (vis != g_shown) {
@@ -583,8 +596,11 @@ static int already_loaded(const char *name) {
 void mt_start(const wchar_t *dir, const wchar_t *ini) {
     _snwprintf(g_log, MAX_PATH, L"%lsMatchTimer.log", dir); lstrcpynW(g_ini, ini, MAX_PATH);
     load_ini();
-    logmsg("MatchTimer v3 inside LobbyStats, clock %s", g_enabled ? "on" : "off ([MatchTimer] Enabled=0)");
-    if (already_loaded("MatchTimer")) { g_clockOff = 1; logmsg("a stand-alone MatchTimer.dll is active too: it draws the clock, not us"); }
+    // LobbyStats 0.9.4 (30.10.2026, owner): the match clock is gone - games crashed with it on. Only the passive parts stay: the sim
+    // tick counter (match running / loading screen, for the loading screen ratings and the cooldown numbers) and the one device
+    // hook through which LobbyStats draws; nothing of the clock is drawn or created, [MatchTimer] Enabled is ignored.
+    g_clockOff = 1;
+    logmsg("MatchTimer inside LobbyStats: the clock is removed (0.9.4), only the match state is kept");
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));   // the device hook is needed for the rest even without the clock
 }
 #endif
