@@ -175,7 +175,7 @@ static void parse_roster(const char *res) {
 }
 unsigned long long g_mySteam;
 static volatile int g_wantJoin, g_wantLeave, g_wantHost, g_hostReported, g_wantStarted, g_wantEnded; static char g_ruined[48]; static volatile int g_loading;
-static int g_maxDiff, g_testBots, g_aiDiff, g_manual, g_autoSwap = 1; static char g_group[32];   // Manual=1: no automation in the lobby (tests)   // TestBots: 1 = me vs computers, 2 = computers vs computers, I watch (AI tests)
+static int g_maxDiff, g_testBots, g_aiDiff, g_manual, g_autoSwap = 1, g_autoSwapCfg = 1; static char g_group[32];   // Manual=1: no automation in the lobby (tests)   // TestBots: 1 = me vs computers, 2 = computers vs computers, I watch (AI tests)
 static const char *RACES[] = {"chaos_space_marines","eldar","imperial_guard","ordo_malleus","orks","space_marines","tau","tyranids","necron"};
 static HANDLE g_wake;
 static volatile int g_coverWant; static wchar_t g_coverLine[160]; static int g_sending;
@@ -233,7 +233,7 @@ static void install_swap_hook(void) {
 #undef ABS
     DWORD o; VirtualProtect(t, 6, PAGE_EXECUTE_READWRITE, &o); t[0] = 0xE9; *(DWORD *)(t + 1) = (DWORD)c - (DWORD)(t + 5); t[5] = 0x90;
     VirtualProtect(t, 6, o, &o); FlushInstructionCache(GetCurrentProcess(), t, 6);
-    logmsg("hooked swap requests (auto-accept %s)", g_autoSwap ? "on" : "off");
+    logmsg("hooked swap requests (auto-accept in ladder lobbies: %s)", g_autoSwapCfg ? "on" : "off");
 }
 
 // ---------------- game options of a ladder lobby: Victory Point Control, 500 points, fixed start positions, standard resources ----------------
@@ -990,6 +990,7 @@ static void msgbox_hide(int hide) {            // message boxes ("Connecting..."
 }
 static void tick(void) {
     static DWORD last, lastStatus; DWORD now = GetTickCount(); if (now - last < 250) return; last = now;
+    g_autoSwap = g_autoSwapCfg && !(g_state == S_IDLE || g_state == S_SEARCH || g_state == S_FAIL);   // auto-accept slot swaps only inside a ladder/automatch lobby (not in a plain public game)
     if (g_coverWant && g_state != S_DONE) stage_line();
     { static DWORD hb; if (now - hb > 30000) { hb = now; logmsg("tick alive, state %s screen %d", SN[g_state], g_screen); } }
     (void)lastStatus;
@@ -1229,14 +1230,14 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_verbose = GetPrivateProfileIntW(L"MMFind", L"Verbose", 0, ini);
     g_logInvoke = GetPrivateProfileIntW(L"MMFind", L"LogInvoke", 0, ini);   // debug: every engine -> Flash call
     g_manual = GetPrivateProfileIntW(L"MMFind", L"Manual", 0, ini);          // test: menus are walked, the lobby is left to the person
-    g_autoSwap = GetPrivateProfileIntW(L"MMFind", L"AutoSwap", 1, ini);      // accept "swap slots" requests without asking
+    g_autoSwapCfg = GetPrivateProfileIntW(L"MMFind", L"AutoSwap", 1, ini);   // master: auto-accept "swap slots" (only in a ladder lobby); 0 = always ask
     { wchar_t g[32]; GetPrivateProfileStringW(L"MMFind", L"TestGroup", L"", g, 32, ini); WideCharToMultiByte(CP_UTF8, 0, g, -1, g_group, sizeof g_group, NULL, NULL); }
     wcscpy(g_ini, ini);
     g_race = GetPrivateProfileIntW(L"Choice", L"Race", -1, ini); g_chapter = GetPrivateProfileIntW(L"Choice", L"Chapter", -1, ini); g_hero = GetPrivateProfileIntW(L"Choice", L"Hero", -1, ini); g_random = GetPrivateProfileIntW(L"Choice", L"Random", 0, ini);
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.27 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.28 start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;

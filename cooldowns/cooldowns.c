@@ -24,7 +24,7 @@
 static const unsigned char SETPROGRESS_PRO[9] = {0x51, 0xF3, 0x0F, 0x10, 0x05, 0x98, 0xDF, 0x07, 0x01};   // push ecx; movss xmm0,[0x0107DF98]
 #define GETBOUNDS_ADDR   0x006859E0
 static const unsigned char GETBOUNDS_PRO[2] = {0x6A, 0xFF};                                               // push -1
-typedef int (__cdecl *GetBounds_t)(void *widget, const char *path, float *out, int mode);
+typedef int (__stdcall *GetBounds_t)(void *widget, const char *path, float *out, int mode);   // callee pops its 4 arguments (ret 0x10): declared __cdecl (0.9.0) it shifted our stack by 16 bytes - the crash when a button first showed a recharge
 
 DWORD mt_game_ms(void); int mt_ticking(void); float mt_ms_per_tick(void); long mt_ticks(void);
 
@@ -122,26 +122,20 @@ __attribute__((naked)) static void hk_setprogress(void) {
 }
 
 // The selection panel's ability button update (virtual, slot 0x0111AFBC = 0xB9AF80; this = the button's slot struct,
-// +0x28 the button widget, +0x74 the ability, +0x2A8 the owner the panel asked about) asks the engine why the ability
-// can't be used (iface->vt+0xB0) and only for a recharge (reasons 0xD/0xE) asks iface->vt+0xB4 for the share done.
-// Out of energy the reasons have no recharge, so the sweep and our share were missing: after the update we ask
-// vt+0xB4 ourselves - the same read-only question the panel asks.
+// +0x28 the button widget, +0x74 the ability). The panel works out the owner and the reasons the ability can't be used
+// itself (0xB9DA80) and asks for the share done only for a recharge (reasons 0xD/0xE); that share reaches us through
+// SetProgress above. We ask the engine nothing here: 0.9.0 asked vt+0xB4 for the share of every button with the owner
+// cached in the button (+0x2A8) and crashed the game on abilities without a recharge (the cultists' prayer on W); asking
+// vt+0xB0 with that owner crashed it too. After the update we only take the number off a hidden or empty button.
 #define BTNUPD_SLOT 0x0111AFBC
 #define BTNUPD_FN   0x00B9AF80
 typedef void (__fastcall *BtnUpd_t)(char *btn, void *edx, char *ctx);
-typedef float (__thiscall *Share_t)(void *iface, void *owner, int ability);
 static BtnUpd_t o_btnupd;
 static void __fastcall hk_btnupd(char *btn, void *edx, char *ctx) {
     o_btnupd(btn, edx, ctx);
-    if (!g_on || !btn || !ctx || !mt_ticking()) return;
+    if (!g_on || !btn || !mt_ticking()) return;
     char *w = *(char **)(btn + 0x28); int ability = *(int *)(btn + 0x74);
-    void **iface = *(void ***)(ctx + 0xC);
-    if (!w) return;
-    if (!ability || !iface || *(w + 0x209) != 1) { cd_progress(w, 0.0f); return; }   // no ability or the button is hidden: no number
-    Share_t share = (Share_t)(*(void ***)iface)[0xB4 / 4];
-    unsigned key = (unsigned)ability * 2654435761u;  // the ability and its owner (ConstOwnerPointer, 16 bytes)
-    for (int i = 0; i < 4; i++) key = (key ^ ((unsigned *)(btn + 0x2A8))[i]) * 16777619u;
-    cd_share(w, share(iface, btn + 0x2A8, ability), key | 1);
+    if (w && (!ability || *(w + 0x209) != 1)) cd_progress(w, 0.0f);   // no ability or the button is hidden: no number
 }
 // Global abilities: their panel's button update (virtual, slot 0x01118B4C = 0xB5B850; this = the button's slot struct,
 // +0x28 the widget, arg +0x10 the ability's entity) takes the entity's extension 1 (EntityController::QI through the import
@@ -181,7 +175,7 @@ static void install_btnupd(void) {
     if (!VirtualProtect(slot, 4, PAGE_READWRITE, &old)) return;
     *slot = (DWORD)hk_btnupd;
     VirtualProtect(slot, 4, old, &old);
-    logmsg("hooked ability button update (vtable %08X): numbers also out of energy", BTNUPD_SLOT);
+    logmsg("hooked ability button update (vtable %08X): hidden buttons cleared, no engine queries", BTNUPD_SLOT);
 }
 
 // ---------- drawing (EndScene of matchtimer.c, through LobbyStats' ls_draw) ----------
@@ -359,7 +353,7 @@ static void install(void) {
 // called by LobbyStats once: dir = its folder (with a trailing backslash), ini = its ini file
 void cd_start(const wchar_t *dir, const wchar_t *ini) {
     _snwprintf(g_log, MAX_PATH, L"%lsCooldowns.log", dir);
-    g_on = GetPrivateProfileIntW(L"Cooldowns", L"Enabled", 1, ini);
+    g_on = GetPrivateProfileIntW(L"Cooldowns", L"Enabled", 0, ini);
     g_size = GetPrivateProfileIntW(L"Cooldowns", L"Size", g_size, ini);
     if (g_size < 12) g_size = 12; if (g_size > 64) g_size = 64;
     wchar_t c[16]; GetPrivateProfileStringW(L"Cooldowns", L"Color", L"FFF8F0", c, 16, ini);

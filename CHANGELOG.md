@@ -4,6 +4,17 @@ Every version gets an entry here before it reaches `main`. CI then tags `vX.Y.Z`
 version (`X.Y.0`) it also publishes a GitHub Release with the DLLs and the entries since the previous `X.Y.0`.
 The version of the set lives only in `VERSION`; each DLL still writes its own version to its log.
 
+## 0.1.4 — 2026-10-30
+- LobbyStats v0.9.2 - the crash on abilities fixed (a player: the game closed on W, the cultists' prayer):
+  - cooldowns/: the game's GetBounds (0x6859E0) pops its own 4 arguments (ret 0x10) but was declared __cdecl, so the first
+    time a button showed a recharge our stack moved by 16 bytes and the game crashed. Declared __stdcall now.
+  - the ability button hook asks the engine nothing any more (0.9.0 asked vt+0xB4 for the share of every button with the
+    owner cached in the button; the 0.9.1 attempt to ask vt+0xB0 first crashed the game at the start of a match). The
+    numbers come from the panel's own SetProgress; hidden or empty buttons are cleared. No numbers out of energy for now.
+  - the numbers stay off by default (`[Cooldowns] Enabled=1` in LobbyStats.ini turns them on), as in the 0.9.1 hotfix.
+- MMFind 0.28 (outside addons.json, released by hand): slot swap requests are auto-accepted only in a ladder/automatch
+  lobby, not in a plain public game; `[MMFind] AutoSwap=0` still always asks.
+
 ## 0.1.3 — 2026-10-29
 - LobbyStats v0.9.0 (carries the match clock and the cooldown numbers, one Direct3D hook):
   - cooldowns/: seconds left on recharging abilities and global abilities in the middle of the button, over the game's
