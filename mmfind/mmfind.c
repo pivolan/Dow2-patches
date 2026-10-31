@@ -70,6 +70,7 @@ static const wchar_t *MODE_PREFIX[] = {L"(2p)", L"(4p)", L"(6p)", L"(6p)"};
 #define MAX_BANS 3                // maps a player may uncheck per mode (ladder rule)
 #define MAXMAPS 160
 static wchar_t g_maps[MAXMAPS][64]; static int g_nmaps;
+static wchar_t g_lmaps[MAXMAPS][64]; static int g_nlmaps;   // 0.32: the map list the game sent last (in a lobby: the lobby's own drop-down) - the host picks from it
 static unsigned char g_off[4][MAXMAPS];  // 1 = player unchecked this map for the mode
 static int map_index(const wchar_t *n) { for (int i = 0; i < g_nmaps; i++) if (!wcscmp(g_maps[i], n)) return i; return -1; }
 static int mode_map(int i, int mode) { return !wcsncmp(g_maps[i], MODE_PREFIX[mode], 4); }
@@ -179,6 +180,9 @@ static int g_maxDiff, g_testBots, g_aiDiff, g_manual, g_autoSwap = 1, g_autoSwap
 static const char *RACES[] = {"chaos_space_marines","eldar","imperial_guard","ordo_malleus","orks","space_marines","tau","tyranids","necron"};
 static HANDLE g_wake;
 static volatile int g_coverWant; static wchar_t g_coverLine[160]; static int g_sending;
+// 0.32 Cancel on the "Match Found" cover (owner 31.10.2026: «кнопка отмена… и тогда всех игроков распускает»): the ladder dissolves
+// the match, the others' MMFind sees "cancelled" in its poll, leaves the lobby and shows who cancelled for a few seconds
+static volatile int g_remoteCancel; static wchar_t g_cancelBy[64]; static DWORD g_noticeUntil;
 
 static void set_state(int s) { logmsg("state %s -> %s", SN[g_state], SN[s]); g_state = s; g_stateTick = GetTickCount(); if (s == S_FAIL) { g_coverWant = 0; g_wantLeave = 1; }
     if (s == S_IDLE || s == S_SEARCH || s == S_FAIL) { SetEnvironmentVariableA("DOW2_RELAY_USE", "0"); SetEnvironmentVariableA("DOW2_RELAY_HOST", NULL); } }   // no automatch lobby: Relic
@@ -362,10 +366,18 @@ static DWORD WINAPI net_worker(LPVOID _) {
             if (http_post(L"ruined", body, res, sizeof res)) { logmsg("ruined loading %s -> %s", g_ruined, res); g_ruined[0] = 0; }
         }
         int st = g_state;
-        if (g_role == 1 && st >= S_GO_MAIN && st <= S_HOST_WAIT) {          // host keeps polling: watchers may be added while we set up
+        if (g_role && st >= S_GO_MAIN && st <= S_DONE && st != S_GUEST_NAME && !g_loading && !g_remoteCancel) {
+            // everyone in a match being set up polls: the host for watchers added meanwhile, all of us for a cancel (0.32)
             static DWORD lastp; if (GetTickCount() - lastp > 2000) { lastp = GetTickCount();
                 snprintf(body, sizeof body, "{\"steam\":\"%llu\"}", g_mySteam);
-                if (http_post(L"poll", body, res, sizeof res) && strstr(res, "\"matched\"")) parse_roster(res); }
+                if (http_post(L"poll", body, res, sizeof res)) {
+                    char state[32], mid[32]; jstr(res, "state", state, sizeof state); jstr(res, "match", mid, sizeof mid);
+                    if (!strcmp(state, "matched") && g_role == 1 && st <= S_HOST_WAIT) parse_roster(res);
+                    if (!strcmp(state, "cancelled") && !strcmp(mid, g_match)) {
+                        char by[96] = ""; jstr(res, "by", by, sizeof by); MultiByteToWideChar(CP_UTF8, 0, by, -1, g_cancelBy, 64);
+                        logmsg("the match was cancelled by %s", by); g_remoteCancel = 1;
+                    }
+                } }
             continue;
         }
         if (st == S_SEARCH || st == S_GUEST_NAME) {
@@ -374,6 +386,12 @@ static DWORD WINAPI net_worker(LPVOID _) {
             char state[32]; jstr(res, "state", state, sizeof state);
             if (st == S_SEARCH && !strcmp(state, "searching")) { g_queue = jint(res, MODE_KEY[g_mode], g_queue); continue; }
             if (st == S_SEARCH && !strcmp(state, "idle")) { g_wantJoin = 1; continue; }        // server forgot us - rejoin
+            if (st == S_GUEST_NAME && !strcmp(state, "cancelled") && !g_remoteCancel) {
+                char mid[32], by[96] = ""; jstr(res, "match", mid, sizeof mid);
+                if (!strcmp(mid, g_match)) { jstr(res, "by", by, sizeof by); MultiByteToWideChar(CP_UTF8, 0, by, -1, g_cancelBy, 64);
+                    logmsg("the match was cancelled by %s", by); g_remoteCancel = 1; }
+                continue;
+            }
             if (!strcmp(state, "matched")) {
                 char role[16], lobby[64], en[128] = "";
                 jstr(res, "role", role, sizeof role); jstr(res, "match", g_match, sizeof g_match);
@@ -426,7 +444,24 @@ static void press_enter(void) {
 }
 
 // ---------------- cover: while the DLL walks the menus, the player sees one calm "connecting" screen ----------------
+static double g_btnX, g_btnY, g_btnW, g_btnH; static int g_btnHover, g_btnShown, g_uiHidden;
 static int g_coverOn; static volatile int g_loading; static wchar_t g_btnText[64], g_startTxt[64], g_aloneTxt[64]; static volatile int g_btnEnabled, g_readyMe, g_allReady, g_readyIdx = -1; static DWORD g_coverTextTick; static DWORD g_ffaNote, g_banNote; static double g_coverH = 1200;
+static int can_cancel(void); static void user_cancel(void);
+static void cancel_button(void *m) {        // hover look + a click with the left button inside it (the game window in front)
+    int show = can_cancel();
+    if (show != g_btnShown) { g_btnShown = show; as_setb(m, "_level0.mmcover.b._visible", show); }
+    if (!show) return;
+    GFxValue x, y; if (!as_get(m, "_level0.mmcover._xmouse", &x) || x.type != GFX_NUMBER || !as_get(m, "_level0.mmcover._ymouse", &y) || y.type != GFX_NUMBER) return;
+    int in = x.v.num >= g_btnX && x.v.num <= g_btnX + g_btnW && y.v.num >= g_btnY && y.v.num <= g_btnY + g_btnH;
+    if (in != g_btnHover) { g_btnHover = in; as_setn(m, "_level0.mmcover.b._alpha", in ? 100 : 75); }
+    static int wasDown; HWND fg = GetForegroundWindow(); DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
+    int down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_LBUTTON) & 0x8001);   // 0x0001: a tap shorter than a frame
+    if (down && !wasDown && in) {           // the menu under the cover is hidden until the button is let go: its own buttons
+        as_setb(m, "_level0.display_item._visible", 0); g_uiHidden = 1;   // must not take this click
+        user_cancel();
+    }
+    wasDown = down;
+}
 static void cover_update(void) {
     void *m = g_fsMovie; if (!m) return;
     GFxValue v;
@@ -445,6 +480,19 @@ static void cover_update(void) {
         as_setb(m, "_level0.mmcover.t1.multiline", 1); as_setb(m, "_level0.mmcover.t1.wordWrap", 1);
         as_setb(m, "_level0.mmcover.t1.embedFonts", 1); as_setb(m, "_level0.mmcover.t1.html", 1); as_setb(m, "_level0.mmcover.t1.selectable", 0);
         g_coverH = H;
+        // the Cancel button (0.32): a clip of its own under the text; the mouse is read from Flash (_xmouse: stage units) every frame
+        g_btnW = W * 0.16; g_btnH = H * 0.06; g_btnX = W / 2 - g_btnW / 2; g_btnY = H / 2 + H * 0.2;
+        as_fnv(m, "_level0.mmcover.createEmptyMovieClip", "sn", "b", 2.0);
+        as_fnv(m, "_level0.mmcover.b.lineStyle", "nnn", 2.0, (double)0xE2C36B, 100.0);
+        as_fnv(m, "_level0.mmcover.b.beginFill", "nn", (double)0x3a2a14, 100.0);
+        as_fnv(m, "_level0.mmcover.b.moveTo", "nn", g_btnX, g_btnY); as_fnv(m, "_level0.mmcover.b.lineTo", "nn", g_btnX + g_btnW, g_btnY);
+        as_fnv(m, "_level0.mmcover.b.lineTo", "nn", g_btnX + g_btnW, g_btnY + g_btnH); as_fnv(m, "_level0.mmcover.b.lineTo", "nn", g_btnX, g_btnY + g_btnH);
+        as_fnv(m, "_level0.mmcover.b.lineTo", "nn", g_btnX, g_btnY); as_fnv(m, "_level0.mmcover.b.endFill", "");
+        as_fnv(m, "_level0.mmcover.b.createTextField", "snnnnn", "t", 1.0, g_btnX, g_btnY + g_btnH * 0.18, g_btnW, g_btnH * 0.8);
+        as_setb(m, "_level0.mmcover.b.t.embedFonts", 1); as_setb(m, "_level0.mmcover.b.t.html", 1); as_setb(m, "_level0.mmcover.b.t.selectable", 0);
+        { wchar_t bt[200]; _snwprintf(bt, 199, L"<p align='center'><font face='$NormalFont' size='%d' color='#E2C36B'>Cancel</font></p>", (int)(H * 0.03));
+          as_setw(m, "_level0.mmcover.b.t.htmlText", bt); }
+        as_setn(m, "_level0.mmcover.b._alpha", 75); g_btnHover = 0; g_btnShown = 1; GetAsyncKeyState(VK_LBUTTON);   // forget clicks made before
         logmsg("cover shown (stage %.0fx%.0f)", W, H); g_coverOn = 1; g_coverTextTick = 0;
     }
     if (!g_coverWant && exists) { as_fnv(m, "_level0.mmcover.removeMovieClip", ""); g_coverOn = 0; logmsg("cover removed"); }
@@ -453,15 +501,23 @@ static void cover_update(void) {
         static int dots; dots = (dots + 1) % 4; wchar_t dd[5] = L"...."; dd[dots] = 0;
         wchar_t h[700];
         int big = (int)(g_coverH * 0.07), small = (int)(g_coverH * 0.032);
-        _snwprintf(h, 699, L"<p align='center'><font face='$TitleFont' size='%d' color='#E2C36B'>Match Found</font></p>"
-                           L"<p align='center'><font face='$NormalFont' size='%d' color='#C9D6CF'>%ls%ls</font></p>", big, small, g_coverLine, dd);
+        _snwprintf(h, 699, L"<p align='center'><font face='$TitleFont' size='%d' color='#E2C36B'>%ls</font></p>"
+                           L"<p align='center'><font face='$NormalFont' size='%d' color='#C9D6CF'>%ls%ls</font></p>", big,
+                   g_noticeUntil ? L"Match Cancelled" : L"Match Found", small, g_coverLine, g_noticeUntil ? L"" : dd);
         as_setw(m, "_level0.mmcover.t1.htmlText", h);
     }
+    if (g_coverWant && exists) cancel_button(m);
 }
 static void cover(const wchar_t *line) { if (line) wcsncpy(g_coverLine, line, 159); g_coverWant = 1; }
+static int can_cancel(void) { return g_state >= S_GO_MAIN && g_state <= S_DONE && !g_loading && !g_noticeUntil; }
+static void user_cancel(void) {             // the Cancel button: out of the lobby, the match off for everyone (the ladder hears "leave")
+    logmsg("Cancel pressed (state %s, screen %d)", SN[g_state], g_screen);
+    if (g_screen == SC_SETUP) fs(".OnClickBack", "");
+    set_state(S_FAIL); SetEvent(g_wake);
+}
 
 // ---------------- saved choice: race / chapter / hero picked by the player ----------------
-int g_race = -1, g_chapter = -1, g_hero = -1, g_random; static volatile int g_heroCount; static volatile int g_curRace = -1, g_curChapter = -1, g_curHero = -1; static void *g_heroSelf; static int g_heroFlags; static volatile DWORD g_autoSelTick, g_lastFsTick; static volatile int g_applyMM, g_mmApplied; static volatile DWORD g_heroAt;
+int g_race = -1, g_chapter = -1, g_hero = -1, g_random; static volatile int g_heroCount; static volatile int g_curRace = -1, g_curChapter = -1, g_curHero = -1; static void *g_heroSelf; static int g_heroFlags; static volatile DWORD g_randomTick, g_autoSelTick, g_lastFsTick; static volatile int g_applyMM, g_mmApplied; static volatile DWORD g_heroAt;
 static wchar_t g_ini[MAX_PATH];   // g_heroCount: heroes of the race on screen (from Receive_PopulateHeroList)
 static void save_choice(void) {
     wchar_t b[16];
@@ -771,8 +827,12 @@ static char __fastcall inv_hook(void *self, void *edx, const char *method, int f
         if (!strcmp(method, "Receive_PopulateDropDownListEx") && count > 2 && args[0].type == GFX_NUMBER && args[0].v.num == 0) {
             int n = 0;                                                  // map list: name, enabled, name, enabled...
             for (unsigned i = 0; 2 + i * 2 < count && n < MAXMAPS; i++)
-                if (args[2 + i * 2].type == GFX_WSTRING && args[2 + i * 2].v.ws) { wcsncpy(g_maps[n], args[2 + i * 2].v.ws, 63); g_maps[n][63] = 0; n++; }
-            if (n != g_nmaps) { g_nmaps = n; load_prefs(); logmsg("map catalog: %d maps", n); }
+                if (args[2 + i * 2].type == GFX_WSTRING && args[2 + i * 2].v.ws) { wcsncpy(g_lmaps[n], args[2 + i * 2].v.ws, 63); g_lmaps[n][63] = 0; n++; }
+            g_nlmaps = n;
+            if (g_screen != SC_SETUP) {
+                memcpy(g_maps, g_lmaps, sizeof g_maps);
+                if (n != g_nmaps) { g_nmaps = n; load_prefs(); logmsg("map catalog: %d maps", n); }
+            } else logmsg("lobby map list: %d maps", n);
         }
         if (!strcmp(method, "Receive_PopulateDropDownList") && g_screen == SC_MM && count == 6 && args[0].type == GFX_NUMBER && args[0].v.num == 0
             && args[5].type == GFX_WSTRING) { static wchar_t w[] = L"Watch a match"; args[5].v.ws = w; }
@@ -884,12 +944,14 @@ static void __fastcall fs_hook(void *self, void *edx, void *movie, const char *c
         // own OnSelectHero, which turned the saved Random off after a random pick)
         if (!g_sending && g_state != S_SETUP_HERO && strstr(cmd, "hero_selection_mc.") && args) {
             int a = -1, b = -1;
-            if (ends_with(cmd, ".OnClickRandom")) { if (!g_random) { g_random = 1; save_choice(); logmsg("choice: random race and hero"); } }
+            if (ends_with(cmd, ".OnClickRandom")) { g_randomTick = GetTickCount(); if (!g_random) { g_random = 1; save_choice(); logmsg("choice: random race and hero"); } }
             else if (ends_with(cmd, ".OnSelectDropDownItem") && sscanf(args, "%d;%d", &a, &b) == 2) {
                 if (g_random) { g_random = 0; save_choice(); logmsg("choice: random off"); }
                 if (a == 0 && b != g_race) { g_race = b; g_chapter = -1; g_hero = -1; save_choice(); logmsg("choice: race %d", b); }
                 else if (a == 1 && b != g_chapter) { g_chapter = b; save_choice(); logmsg("choice: chapter %d", b); }
-            } else if (ends_with(cmd, ".OnSelectHero") && sscanf(args, "%d", &a) == 1 && GetTickCount() - g_autoSelTick > 400) {
+            } else if (ends_with(cmd, ".OnSelectHero") && sscanf(args, "%d", &a) == 1 && !(GetTickCount() - g_autoSelTick <= 400 && a == g_curHero) && GetTickCount() - g_randomTick > 1000) {
+                // 0.32: only the panel's echo of the hero the game itself just selected is skipped (same hero, within 0.4 s); a quick
+                // pick of ANOTHER hero right after a race change counted as that echo before - the lobby then got the default hero
                 if (g_random) { g_random = 0; save_choice(); logmsg("choice: random off"); }
                 g_curHero = a; if (a != g_hero) { g_hero = a; save_choice(); logmsg("choice: hero %d", a); }
             }
@@ -932,7 +994,7 @@ static void __fastcall fs_hook(void *self, void *edx, void *movie, const char *c
             if (g_state == S_IDLE || g_state == S_DONE || g_state == S_FAIL) {
                 if (g_curRace >= 0 && !g_random) { g_race = g_curRace; g_chapter = g_curChapter; if (g_curHero >= 0) g_hero = g_curHero; save_choice();
                     logmsg("search with race %d chapter %d hero %d (as shown on Find a Game)", g_race, g_chapter, g_hero); }
-                g_searchTick = GetTickCount(); g_queue = -1; g_lobbyRace = -1; g_role = 0; g_gameName[0] = 0; g_hostMap[0] = 0; g_oppName[0] = 0; g_hostReported = 0; g_wantHost = 0;
+                g_noticeUntil = 0; g_coverWant = 0; g_searchTick = GetTickCount(); g_queue = -1; g_lobbyRace = -1; g_role = 0; g_gameName[0] = 0; g_hostMap[0] = 0; g_oppName[0] = 0; g_hostReported = 0; g_wantHost = 0;
                 set_state(S_SEARCH); g_wantJoin = 1; SetEvent(g_wake);
             } else if (g_state == S_SEARCH) { set_state(S_IDLE); g_wantLeave = 1; SetEvent(g_wake); }
             return;                                                   // never start Relic's own search
@@ -1045,7 +1107,17 @@ static void msgbox_hide(int hide) {            // message boxes ("Connecting..."
 static void tick(void) {
     static DWORD last, lastStatus; DWORD now = GetTickCount(); if (now - last < 250) return; last = now;
     g_autoSwap = g_autoSwapCfg && !(g_state == S_IDLE || g_state == S_SEARCH || g_state == S_FAIL);   // auto-accept slot swaps only inside a ladder/automatch lobby (not in a plain public game)
-    if (g_coverWant && g_state != S_DONE) stage_line();
+    if (g_remoteCancel) {                                             // 0.32: someone cancelled the match (or dropped out) - leave too
+        g_remoteCancel = 0;
+        if (g_state >= S_GO_MAIN && g_state <= S_DONE && !g_loading) {
+            if (g_screen == SC_SETUP) fs(".OnClickBack", "");
+            set_state(S_FAIL);
+            _snwprintf(g_coverLine, 159, L"%ls left the match. Find a Game to search again", g_cancelBy[0] ? g_cancelBy : L"A player");
+            g_noticeUntil = now + 6000; g_coverTextTick = 0; g_coverWant = 1;
+        }
+    }
+    if (g_noticeUntil && (int)(now - g_noticeUntil) > 0) { g_noticeUntil = 0; g_coverWant = 0; }
+    if (g_coverWant && g_state != S_DONE && !g_noticeUntil) stage_line();
     { static DWORD hb; if (now - hb > 30000) { hb = now; logmsg("tick alive, state %s screen %d", SN[g_state], g_screen); } }
     (void)lastStatus;
     if (g_loadTick && now - g_loadTick > 180000) { g_loadTick = 0; marker_set(NULL); }      // past loading: a crash later is not a ruined loading
@@ -1143,15 +1215,19 @@ static void tick(void) {
         if (step == 3 && in_state() > heroT + 1200) {
             step = 4;
             if (g_role == 1) {                                        // host: 1v1 map right away (nobody else in yet - no swap question)
-                int mi = g_mapName[0] ? map_index(g_mapName) : -1;
-                if (mi < 0) {                                         // server gave no map - random one of mine for the mode
-                    int c[MAXMAPS], k = 0; for (int i = 0; i < g_nmaps; i++) if (mode_map(i, g_mode) && !g_off[g_mode][i]) c[k++] = i;
-                    if (!k) for (int i = 0; i < g_nmaps; i++) if (mode_map(i, g_mode)) c[k++] = i;
+                // 0.32: the index goes to the lobby's drop-down, so it is looked up in the list the lobby sent (MM-m10 30.10: a 1v1 played
+                // on a 6p map - no map was found and the lobby kept the host's last one); no map of the match's size = no match
+                int mm = g_matchMode, nl = g_nlmaps ? g_nlmaps : g_nmaps; wchar_t (*lst)[64] = g_nlmaps ? g_lmaps : g_maps;
+                int mi = -1; if (g_mapName[0]) for (int i = 0; i < nl; i++) if (!wcscmp(lst[i], g_mapName)) { mi = i; break; }
+                if (mi < 0) {                                         // server gave no map (or the lobby lacks it) - random one of mine for the mode
+                    int c[MAXMAPS], k = 0;
+                    for (int i = 0; i < nl; i++) if (!wcsncmp(lst[i], MODE_PREFIX[mm], 4)) { int ci = map_index(lst[i]); if (ci < 0 || !g_off[mm][ci]) c[k++] = i; }
+                    if (!k) for (int i = 0; i < nl; i++) if (!wcsncmp(lst[i], MODE_PREFIX[mm], 4)) c[k++] = i;
                     if (k) mi = c[GetTickCount() % k];
                 }
-                if (mi >= 0) { char a[16]; snprintf(a, sizeof a, "0;%d", mi); logmsg("map: %ls", g_maps[mi]); fs(".game_options_panel_mc.OnSelectDropDownItem", a);
-                               WideCharToMultiByte(CP_UTF8, 0, g_maps[mi], -1, g_hostMap, sizeof g_hostMap, NULL, NULL); }
-                else logmsg("no map for mode %s, keeping the current one", MODE_KEY[g_mode]);
+                if (mi < 0) { logmsg("no %s map in the lobby list (%d maps) - cancelling the match", MODE_KEY[mm], nl); set_state(S_FAIL); break; }
+                { char a[16]; snprintf(a, sizeof a, "0;%d", mi); logmsg("map: %ls (lobby list %d)", lst[mi], g_nlmaps); fs(".game_options_panel_mc.OnSelectDropDownItem", a);
+                  WideCharToMultiByte(CP_UTF8, 0, lst[mi], -1, g_hostMap, sizeof g_hostMap, NULL, NULL); }
                 g_wantHost = 1; SetEvent(g_wake); cover(L"Waiting for the players to connect"); set_state(S_HOST_WAIT);
             } else { set_state(S_PLACE); }                            // guest / watcher: take the assigned slot, then ready
         }
@@ -1217,13 +1293,17 @@ static void __stdcall upd_hook(float dt) {
         char a[8]; snprintf(a, sizeof a, "0;%d", g_mode); fs(".OnSelectDropDownItem", a); } }
     if (g_heroAt && now >= g_heroAt) { g_heroAt = 0; if (alive && g_screen == SC_MM) apply_hero(); }
     tick();
-    { static DWORD t; if (now - t > 1000 && (g_state == S_IDLE || g_state == S_FAIL)) { t = now;        // debug: MMFind_cover.txt shows the cover in the menu
+    { static DWORD t; if (now - t > 1000 && (g_state == S_IDLE || g_state == S_FAIL) && !g_noticeUntil) { t = now;        // debug: MMFind_cover.txt shows the cover in the menu
         wchar_t p[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind_cover.txt", g_dir);
         FILE *f = _wfopen(p, L"r"); if (f) { char b[150] = ""; fgets(b, sizeof b, f); fclose(f); b[strcspn(b, "\r\n")] = 0;
             MultiByteToWideChar(CP_UTF8, 0, b, -1, g_coverLine, 159); g_coverWant = 1; } else g_coverWant = 0; } }
     { static DWORD t2; if (now - t2 > 1000) { t2 = now; wchar_t p2[MAX_PATH]; _snwprintf(p2, MAX_PATH, L"%lsMMFind_nocover.txt", g_dir);
         if (GetFileAttributesW(p2) != INVALID_FILE_ATTRIBUTES && g_coverWant) { g_coverWant = 0; logmsg("debug: cover off"); } } }
-    if (g_fsMovie && !g_loading && (alive || !g_coverWant) && (g_coverWant || g_coverOn)) cover_update();      // S_FAIL also passes here: removes the cover
+    if (g_uiHidden && g_fsMovie && !g_loading && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {        // the Cancel click is over: the menu back
+        static DWORD up; if (!up) up = now;
+        if (now - up > 300) { as_setb(g_fsMovie, "_level0.display_item._visible", 1); g_uiHidden = 0; up = 0; logmsg("menu shown again after Cancel"); } }
+    int lobbyWait = g_state == S_DONE && g_screen == SC_SETUP && now - g_lastFsTick < 3000;      // in the lobby before Start: the menu is alive (Cancel works)
+    if (g_fsMovie && !g_loading && (alive || lobbyWait || !g_coverWant) && (g_coverWant || g_coverOn)) cover_update();      // S_FAIL also passes here: removes the cover
     if (!g_loading) msgbox_hide(g_coverWant && g_state >= S_GO_MAIN && g_state <= S_GUEST_JOINED);
 }
 
@@ -1299,7 +1379,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID _) {
     g_mySteam = my_steam();
     { wchar_t p[MAX_PATH], o[MAX_PATH]; _snwprintf(p, MAX_PATH, L"%lsMMFind.log", g_dir); _snwprintf(o, MAX_PATH, L"%lsMMFind.log.old", g_dir);
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW(p, GetFileExInfoStandard, &a) && (a.nFileSizeHigh || a.nFileSizeLow > (1u << 20))) MoveFileExW(p, o, MOVEFILE_REPLACE_EXISTING); }
-    logmsg("MMFind 0.31 start, steam=%llu server=%ls", g_mySteam, g_server);
+    logmsg("MMFind 0.32 start, steam=%llu server=%ls", g_mySteam, g_server);
     { char n[64]; wsprintfA(n, "Local\\dow2patch_MMFind_%lu", GetCurrentProcessId());          // one copy per game (launcher + dow2-patches)
       HANDLE mx = CreateMutexA(NULL, FALSE, n); if (mx && GetLastError() == ERROR_ALREADY_EXISTS) { logmsg("another MMFind copy is active, this one stays idle"); return TRUE; } }
     install(); return TRUE;
